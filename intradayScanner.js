@@ -1,33 +1,38 @@
 const { chromium } = require('playwright');
-const { processCandlesAndGetState } = require('./scanner');
+const {
+    processCandlesAndGetState,
+    detectGapFadeShort,
+    analyzeMarketHealth,
+    calculateVWAP,
+    getPrevDayData,
+    getDailyRSI,
+    getConsecutiveRedDays,
+    parseTradingViewWS
+} = require('./scanner');
+
+// ─────────────────────────────────────────────
+// STOCK LISTS
+// Indian list trimmed to 12 most liquid stocks
+// + NIFTY as hidden market health tab
+// ─────────────────────────────────────────────
+
+const NIFTY_SYMBOL = { symbol: 'NSE:NIFTY', name: 'NIFTY 50 (Market Health)' };
 
 const STOCK_LISTS = {
+    // 12 most liquid Indian stocks for gap fade strategy
     INDIAN_STOCKS: [
         { symbol: 'NSE:RELIANCE', name: 'Reliance Industries' },
         { symbol: 'NSE:HDFCBANK', name: 'HDFC Bank' },
         { symbol: 'NSE:ICICIBANK', name: 'ICICI Bank' },
         { symbol: 'NSE:INFY', name: 'Infosys' },
-        { symbol: 'NSE:ITC', name: 'ITC Limited' },
         { symbol: 'NSE:TCS', name: 'TCS' },
-        { symbol: 'NSE:LT', name: 'Larsen & Toubro' },
         { symbol: 'NSE:SBIN', name: 'State Bank of India' },
-        { symbol: 'NSE:BHARTIARTL', name: 'Bharti Airtel' },
-        { symbol: 'NSE:BAJFINANCE', name: 'Bajaj Finance' },
-        { symbol: 'NSE:KOTAKBANK', name: 'Kotak Mahindra Bank' },
         { symbol: 'NSE:AXISBANK', name: 'Axis Bank' },
-        { symbol: 'NSE:ASIANPAINT', name: 'Asian Paints' },
-        { symbol: 'NSE:HINDUNILVR', name: 'Hindustan Unilever' },
-        { symbol: 'NSE:TITAN', name: 'Titan Company' },
+        { symbol: 'NSE:BAJFINANCE', name: 'Bajaj Finance' },
         { symbol: 'NSE:MARUTI', name: 'Maruti Suzuki' },
-        { symbol: 'NSE:SUNPHARMA', name: 'Sun Pharma' },
         { symbol: 'NSE:TATAMOTORS', name: 'Tata Motors' },
-        { symbol: 'NSE:M&M', name: 'M&M' },
-        { symbol: 'NSE:TATASTEEL', name: 'Tata Steel' },
-        { symbol: 'NSE:NTPC', name: 'NTPC' },
-        { symbol: 'NSE:POWERGRID', name: 'Power Grid' },
-        { symbol: 'NSE:ULTRACEMCO', name: 'UltraTech Cement' },
-        { symbol: 'NSE:ADANIENT', name: 'Adani Enterprises' },
-        { symbol: 'NSE:WIPRO', name: 'Wipro' }
+        { symbol: 'NSE:LT', name: 'Larsen & Toubro' },
+        { symbol: 'NSE:KOTAKBANK', name: 'Kotak Mahindra Bank' }
     ],
     US_STOCKS: [
         { symbol: 'NASDAQ:AAPL', name: 'Apple Inc.' },
@@ -55,6 +60,10 @@ const STOCK_LISTS = {
     ]
 };
 
+// ─────────────────────────────────────────────
+// STATE VARIABLES
+// ─────────────────────────────────────────────
+
 const EventEmitter = require('events');
 const scannerEmitter = new EventEmitter();
 
@@ -62,29 +71,145 @@ let browser = null;
 let currentAssetClass = 'INDIAN_STOCKS';
 let currentInterval = '5';
 let activePages = [];
-let scanStates = {}; // Cache of { symbol: { price, trend, rsi, macdHist, status, name, lastSignal } }
-let candlesCache = {}; // Cache of { symbol: [candles] }
-let activeAlerts = []; // List of generated signals: { symbol, name, type, price, time, winRate, prob }
 
-// Parser for TradingView's custom WebSocket protocol
-function parseTradingViewWS(payload) {
-    const messages = [];
-    let remaining = payload;
-    while (remaining) {
-        const match = remaining.match(/^~m~(\d+)~m~/);
-        if (!match) break;
-        const header = match[0];
-        const length = parseInt(match[1], 10);
-        const jsonStr = remaining.substring(header.length, header.length + length);
-        try {
-            messages.push(JSON.parse(jsonStr));
-        } catch (e) {}
-        remaining = remaining.substring(header.length + length);
-    }
-    return messages;
+// Per-stock scan state shown on dashboard
+// Shape: { symbol, name, price, trend, rsi, gapPercent, gapFadeSignal,
+//          vwap, prevDayClose, prevDayHigh, dailyRSI, consecutiveRedDays,
+//          status, lastSignal, marketAlignment }
+let scanStates = {};
+
+// Raw candle cache per symbol (used by focus-mode SSE reuse)
+let candlesCache = {};
+
+// Live alerts list (recent signals)
+let activeAlerts = [];
+
+// Persistent daily ledger (survives page refreshes)
+let dailyLedger = [];
+
+// NIFTY market health — shared across all stocks
+let marketHealth = {
+    status: 'UNKNOWN',
+    label: 'Loading NIFTY...',
+    shortFriendly: false,
+    gapPercent: null,
+    rsi: null,
+    currentPrice: null,
+    vwap: null,
+    isFading: null,
+    belowVWAP: null
+};
+
+// NIFTY raw candles cache
+let niftyCandles = [];
+
+// ─────────────────────────────────────────────
+// HELPER: IST time check
+// ─────────────────────────────────────────────
+
+function getISTTimeVal() {
+    const now = new Date();
+    const istMs = now.getTime() + (5.5 * 60 * 60 * 1000);
+    const ist = new Date(istMs);
+    return ist.getUTCHours() * 100 + ist.getUTCMinutes();
 }
 
+// ─────────────────────────────────────────────
+// NIFTY TAB — background market health watcher
+// Opens a separate headless tab for NIFTY index
+// Never shown as a tradeable stock on dashboard
+// ─────────────────────────────────────────────
+
+async function startNiftyHealthTab(context) {
+    if (!context) return;
+
+    const page = await context.newPage();
+    activePages.push(page);
+
+    // Block heavy resources
+    await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
+            route.abort();
+        } else {
+            route.continue();
+        }
+    });
+
+    page.on('websocket', ws => {
+        ws.on('framereceived', frame => {
+            if (!browser) return;
+            const payload = frame.payload.toString();
+            const messages = parseTradingViewWS(payload);
+            let updated = false;
+
+            for (const msg of messages) {
+                if (msg.m === 'timescale_update' && msg.p && msg.p[1]) {
+                    const dataObj = msg.p[1];
+                    for (const key in dataObj) {
+                        if (dataObj[key].s) {
+                            for (const bar of dataObj[key].s) {
+                                if (bar.v && bar.v.length >= 6) {
+                                    niftyCandles.push({
+                                        time: new Date(bar.v[0] * 1000).toISOString(),
+                                        open: bar.v[1], high: bar.v[2],
+                                        low: bar.v[3], close: bar.v[4],
+                                        volume: bar.v[5]
+                                    });
+                                    updated = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (msg.m === 'du' && msg.p && msg.p[1]) {
+                    const dataObj = msg.p[1];
+                    for (const key in dataObj) {
+                        if (dataObj[key].s) {
+                            for (const bar of dataObj[key].s) {
+                                if (bar.v && bar.v.length >= 6) {
+                                    const update = {
+                                        time: new Date(bar.v[0] * 1000).toISOString(),
+                                        open: bar.v[1], high: bar.v[2],
+                                        low: bar.v[3], close: bar.v[4],
+                                        volume: bar.v[5]
+                                    };
+                                    const idx = niftyCandles.findIndex(c => c.time === update.time);
+                                    if (idx !== -1) niftyCandles[idx] = update;
+                                    else niftyCandles.push(update);
+                                    updated = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (updated && niftyCandles.length > 0) {
+                // Recompute market health every tick
+                marketHealth = analyzeMarketHealth(niftyCandles);
+                // Emit so any listening SSE clients get updated market health
+                scannerEmitter.emit('marketHealth', marketHealth);
+                console.log(`[NIFTY] ${marketHealth.label} | RSI: ${marketHealth.rsi} | Gap: ${marketHealth.gapPercent}%`);
+            }
+        });
+    });
+
+    const tvUrl = `https://www.tradingview.com/chart/?symbol=${NIFTY_SYMBOL.symbol}&interval=${currentInterval}`;
+    page.goto(tvUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(err => {
+        console.error('[NIFTY] Error loading NIFTY tab:', err.message);
+    });
+
+    console.log('[NIFTY] Market health tab started for NSE:NIFTY');
+}
+
+// ─────────────────────────────────────────────
+// MAIN SCANNER START
+// ─────────────────────────────────────────────
+
 async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdate) {
+    // Stop any existing scanner first
     if (browser) {
         await stopIntradayScanner();
     }
@@ -92,11 +217,19 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
     currentAssetClass = assetClass || 'INDIAN_STOCKS';
     currentInterval = interval || '5';
     const targetStocks = STOCK_LISTS[currentAssetClass] || STOCK_LISTS.INDIAN_STOCKS;
+    const isIndian = currentAssetClass === 'INDIAN_STOCKS';
 
-    console.log(`[Scanner] Starting background scan for ${currentAssetClass} at ${currentInterval}m interval...`);
-    
-    // Initialize empty scan state cache
+    console.log(`[Scanner] Starting for ${currentAssetClass} at ${currentInterval}m interval (${targetStocks.length} stocks)...`);
+
+    // ── Reset all state ──
     scanStates = {};
+    candlesCache = {};
+    niftyCandles = [];
+    marketHealth = {
+        status: 'UNKNOWN', label: 'Loading NIFTY...', shortFriendly: false,
+        gapPercent: null, rsi: null, currentPrice: null, vwap: null
+    };
+
     for (const stock of targetStocks) {
         scanStates[stock.symbol] = {
             symbol: stock.symbol,
@@ -105,30 +238,49 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
             trend: null,
             rsi: null,
             macdHist: null,
+            // ── new gap fade fields ──
+            gapPercent: null,
+            gapStatus: null,   // 'WATCH' | 'SHORT_SETUP' | 'NO_GAP' | 'TOO_BIG'
+            gapFadeSignal: null,   // full signal object from detectGapFadeShort
+            vwap: null,
+            prevDayClose: null,
+            prevDayHigh: null,
+            dailyRSI: null,
+            consecutiveRedDays: null,
+            marketAlignment: null,   // 'WITH_MARKET' | 'AGAINST_MARKET' | 'NEUTRAL'
             status: 'Loading 🔵',
             lastSignal: null
         };
     }
+
     if (onStatusUpdate) onStatusUpdate(scanStates);
 
     try {
         browser = await chromium.launch({ headless: true });
         const context = await browser.newContext();
 
+        // ── Start NIFTY health tab first (only for Indian stocks) ──
+        if (isIndian) {
+            await startNiftyHealthTab(context);
+            // Give NIFTY tab 2 seconds head start before stocks start loading
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        // ── Start one tab per stock ──
         for (let i = 0; i < targetStocks.length; i++) {
             const stock = targetStocks[i];
-            
-            // Stagger tab loading to minimize CPU spikes
+
+            // Stagger tab loading: 1.5s apart to avoid CPU/network spike
             if (i > 0) {
                 await new Promise(resolve => setTimeout(resolve, 1500));
             }
-            
-            if (!browser) break; // if stopped while staggering
+
+            if (!browser) break; // scanner was stopped mid-load
 
             const page = await context.newPage();
             activePages.push(page);
 
-            // Block stylesheets, images, fonts, and media for performance optimization
+            // Block heavy resources for performance
             await page.route('**/*', (route) => {
                 const type = route.request().resourceType();
                 if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
@@ -139,7 +291,8 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
             });
 
             const candles = [];
-            let lastProcessedSignalTime = null;
+            let lastProcessedGapSignalId = null; // track so we don't re-alert same signal
+            let lastProcessedAplusTime = null; // for APLUS_INTRADAY signal dedup
 
             page.on('websocket', ws => {
                 ws.on('framereceived', frame => {
@@ -148,6 +301,7 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                     const messages = parseTradingViewWS(payload);
                     let stateUpdated = false;
 
+                    // ── Ingest candle data ──
                     for (const msg of messages) {
                         if (msg.m === 'timescale_update' && msg.p && msg.p[1]) {
                             const dataObj = msg.p[1];
@@ -157,10 +311,8 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                                         if (bar.v && bar.v.length >= 6) {
                                             candles.push({
                                                 time: new Date(bar.v[0] * 1000).toISOString(),
-                                                open: bar.v[1],
-                                                high: bar.v[2],
-                                                low: bar.v[3],
-                                                close: bar.v[4],
+                                                open: bar.v[1], high: bar.v[2],
+                                                low: bar.v[3], close: bar.v[4],
                                                 volume: bar.v[5]
                                             });
                                             stateUpdated = true;
@@ -169,7 +321,7 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                                 }
                             }
                         }
-                        
+
                         if (msg.m === 'du' && msg.p && msg.p[1]) {
                             const dataObj = msg.p[1];
                             for (const key in dataObj) {
@@ -178,18 +330,13 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                                         if (bar.v && bar.v.length >= 6) {
                                             const update = {
                                                 time: new Date(bar.v[0] * 1000).toISOString(),
-                                                open: bar.v[1],
-                                                high: bar.v[2],
-                                                low: bar.v[3],
-                                                close: bar.v[4],
+                                                open: bar.v[1], high: bar.v[2],
+                                                low: bar.v[3], close: bar.v[4],
                                                 volume: bar.v[5]
                                             };
-                                            const existingIndex = candles.findIndex(c => c.time === update.time);
-                                            if (existingIndex !== -1) {
-                                                candles[existingIndex] = update;
-                                            } else {
-                                                candles.push(update);
-                                            }
+                                            const idx = candles.findIndex(c => c.time === update.time);
+                                            if (idx !== -1) candles[idx] = update;
+                                            else candles.push(update);
                                             stateUpdated = true;
                                         }
                                     }
@@ -198,127 +345,281 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                         }
                     }
 
-                    if (stateUpdated && candles.length > 0) {
-                        // Cache raw candles in memory and broadcast update
-                        candlesCache[stock.symbol] = [...candles];
-                        scannerEmitter.emit('update', { symbol: stock.symbol, candles: [...candles] });
+                    if (!stateUpdated || candles.length === 0) return;
 
-                        const options = { strategy: 'APLUS_INTRADAY' };
-                        const state = processCandlesAndGetState(candles, stock.symbol, currentInterval, options);
-                        
-                        if (state && state.latest) {
-                            const cached = scanStates[stock.symbol];
-                            cached.price = state.latest.price;
-                            cached.trend = state.latest.trend;
-                            cached.rsi = state.latest.rsi;
-                            cached.macdHist = state.latest.macdHist;
-                            cached.status = 'Scanning 🟢';
+                    // ── Cache raw candles & emit for focus-mode SSE reuse ──
+                    candlesCache[stock.symbol] = [...candles];
+                    scannerEmitter.emit('update', { symbol: stock.symbol, candles: [...candles] });
 
-                            // Detect new signal on the latest completed or currently active candle
-                            if (state.latest.signal && lastProcessedSignalTime !== state.latest.time) {
-                                lastProcessedSignalTime = state.latest.time;
-                                
-                                let prob = 'Moderate (~70%)';
-                                if (state.latest.signal === 'ENTRY_LONG') prob = 'High (~85%)';
-                                if (state.latest.signal === 'ENTRY_SHORT') prob = 'High (~82%)';
-                                
-                                cached.lastSignal = {
-                                    type: state.latest.signal,
-                                    price: state.latest.price,
-                                    time: state.latest.time,
-                                    winRate: state.stats.winRate,
-                                    prob: prob
+                    // ── Process with GAP_FADE strategy ──
+                    const options = { strategy: 'GAP_FADE' };
+                    const state = processCandlesAndGetState(candles, stock.symbol, currentInterval, options);
+
+                    if (!state || !state.latest) return;
+
+                    const cached = scanStates[stock.symbol];
+                    const id = state.intradayData;
+
+                    // ── Update basic price/trend data ──
+                    cached.price = state.latest.price;
+                    cached.trend = state.latest.trend;
+                    cached.rsi = state.latest.rsi;
+                    cached.macdHist = state.latest.macdHist;
+                    cached.status = 'Scanning 🟢';
+
+                    // ── Update intraday computed fields ──
+                    cached.vwap = id.vwap;
+                    cached.prevDayClose = id.prevDayClose;
+                    cached.prevDayHigh = id.prevDayHigh;
+                    cached.dailyRSI = id.dailyRSI;
+                    cached.consecutiveRedDays = id.consecutiveRedDays;
+                    cached.gapPercent = id.gapPercent;
+                    cached.todayHigh = id.todayHigh;
+                    cached.todayOpen = id.todayOpen;
+
+                    // ── Determine gap status for dashboard badge ──
+                    const gap = id.gapPercent;
+                    if (gap === null) {
+                        cached.gapStatus = 'NO_DATA';
+                    } else if (gap < 1.5) {
+                        cached.gapStatus = 'NO_GAP';       // gap too small
+                    } else if (gap > 3.5) {
+                        cached.gapStatus = 'TOO_BIG';      // gap too large, likely news
+                    } else {
+                        cached.gapStatus = 'WATCH';        // in our zone, monitoring
+                    }
+
+                    // ── Market alignment check ──
+                    // Tells user if this stock is fading WITH or AGAINST market
+                    if (marketHealth.status === 'UNKNOWN' || marketHealth.status === 'NEUTRAL') {
+                        cached.marketAlignment = 'NEUTRAL';
+                    } else if (marketHealth.shortFriendly) {
+                        // Market is weak/bearish — shorting is WITH market
+                        cached.marketAlignment = 'WITH_MARKET';
+                    } else {
+                        // Market is strong — shorting is AGAINST market
+                        cached.marketAlignment = 'AGAINST_MARKET';
+                    }
+
+                    // ── Gap Fade Short Signal Detection ──
+                    const gapFade = id.gapFadeSignal;
+                    cached.gapFadeSignal = gapFade; // always update (null if conditions not met)
+
+                    if (gapFade) {
+                        // Upgrade gap status if signal is confirmed
+                        cached.gapStatus = 'SHORT_SETUP';
+
+                        // Build a unique ID for this signal to avoid duplicate alerts
+                        const signalId = `${stock.symbol}_gap_${gapFade.gapPercent}_${gapFade.currentPrice}`;
+
+                        if (signalId !== lastProcessedGapSignalId) {
+                            lastProcessedGapSignalId = signalId;
+
+                            // Only alert if NIFTY is not strongly bullish
+                            // (still alert even if NEUTRAL, just add a caution label)
+                            const marketBlocking = marketHealth.status === 'STRONG';
+
+                            if (!marketBlocking) {
+                                const alertObj = {
+                                    id: signalId,
+                                    symbol: stock.symbol,
+                                    name: stock.name,
+                                    type: 'GAP_FADE_SHORT',
+                                    price: gapFade.currentPrice,
+                                    time: new Date().toISOString(),
+
+                                    // Trade levels
+                                    gapPercent: gapFade.gapPercent,
+                                    entryZoneLow: gapFade.entryZoneLow,
+                                    entryZoneHigh: gapFade.entryZoneHigh,
+                                    slApprox: gapFade.slApprox,
+                                    target1: gapFade.target1,
+                                    target2: gapFade.target2,
+
+                                    // Context
+                                    vwap: gapFade.vwap,
+                                    rsi5min: gapFade.rsi5min,
+                                    dailyRSI: gapFade.dailyRSI,
+                                    confidence: gapFade.confidence,
+                                    bounceRisk: gapFade.bounceRisk,
+                                    warnings: gapFade.warnings,
+                                    marketHealth: marketHealth.label,
+                                    marketFriendly: marketHealth.shortFriendly,
+                                    marketAlignment: cached.marketAlignment,
+                                    consecutiveRedDays: gapFade.consecutiveRedDays
                                 };
 
-                                const signalTime = new Date(state.latest.time).getTime();
-                                const isRecent = (Date.now() - signalTime) < 15 * 60 * 1000; // Only alert if signal is less than 15 minutes old
+                                // Store in active alerts
+                                if (!activeAlerts.some(a => a.id === alertObj.id)) {
+                                    activeAlerts.unshift(alertObj);
+                                    if (activeAlerts.length > 50) activeAlerts.pop();
 
-                                if (isRecent) {
-                                    const alertObj = {
-                                        id: `${stock.symbol}_${signalTime}`,
-                                        symbol: stock.symbol,
-                                        name: stock.name,
-                                        type: state.latest.signal,
-                                        price: state.latest.price,
-                                        time: state.latest.time,
-                                        winRate: state.stats.winRate,
-                                        prob: cached.lastSignal.prob
-                                    };
+                                    // Persist to daily ledger
+                                    dailyLedger.unshift(alertObj);
+                                    if (dailyLedger.length > 1000) dailyLedger.pop();
 
-                                    // Add to global alert cache
-                                    if (!activeAlerts.some(a => a.id === alertObj.id)) {
-                                        activeAlerts.unshift(alertObj);
-                                        if (activeAlerts.length > 50) activeAlerts.pop();
-                                        
-                                        // Also add to persistent daily ledger
-                                        dailyLedger.unshift(alertObj);
-                                        if (dailyLedger.length > 1000) dailyLedger.pop();
-                                        
-                                        if (onAlert) onAlert(alertObj);
-                                    }
+                                    // Store as last signal on this stock
+                                    cached.lastSignal = alertObj;
+
+                                    if (onAlert) onAlert(alertObj);
+
+                                    console.log(`[SIGNAL] GAP_FADE_SHORT: ${stock.symbol} | Gap: ${gapFade.gapPercent}% | Entry: ${gapFade.currentPrice} | SL: ${gapFade.slApprox} | T1: ${gapFade.target1} | Confidence: ${gapFade.confidence} | Market: ${marketHealth.label}`);
                                 }
+                            } else {
+                                console.log(`[SIGNAL BLOCKED] ${stock.symbol} — market is STRONG, skipping short signal`);
                             }
-
-                            if (onStatusUpdate) onStatusUpdate(scanStates);
                         }
                     }
+
+                    // ── Broadcast updated scan states to all SSE clients ──
+                    if (onStatusUpdate) onStatusUpdate(scanStates);
                 });
             });
 
-            let tvUrl = `https://www.tradingview.com/chart/?symbol=${stock.symbol}`;
-            if (currentInterval !== '1D') {
-                tvUrl += `&interval=${currentInterval}`;
-            }
-
-            // Launch page navigation in background
+            // Navigate to TradingView chart
+            const tvUrl = `https://www.tradingview.com/chart/?symbol=${stock.symbol}&interval=${currentInterval}`;
             page.goto(tvUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(err => {
-                console.error(`[Scanner] Error loading page for ${stock.symbol}:`, err.message);
+                console.error(`[Scanner] Error loading ${stock.symbol}:`, err.message);
                 if (scanStates[stock.symbol]) {
                     scanStates[stock.symbol].status = 'Error 🔴';
                     if (onStatusUpdate) onStatusUpdate(scanStates);
                 }
             });
         }
+
     } catch (error) {
-        console.error('[Scanner] Critical error in background scanner:', error);
+        console.error('[Scanner] Critical error:', error);
         await stopIntradayScanner();
     }
 }
 
+// ─────────────────────────────────────────────
+// STOP SCANNER
+// ─────────────────────────────────────────────
+
 async function stopIntradayScanner() {
-    console.log('[Scanner] Stopping background multi-stock scanner...');
+    console.log('[Scanner] Stopping...');
     activePages = [];
+    niftyCandles = [];
+
     if (browser) {
         const activeBrowser = browser;
-        browser = null; // Mark as closed immediately to ignore websocket processing
-        try {
-            await activeBrowser.close();
-        } catch (e) {}
+        browser = null; // mark closed before awaiting to prevent race
+        try { await activeBrowser.close(); } catch (e) { }
     }
+
     for (const key in scanStates) {
         scanStates[key].status = 'Stopped 🔘';
     }
 }
+
+// ─────────────────────────────────────────────
+// STATE GETTERS
+// ─────────────────────────────────────────────
 
 function getScannerState() {
     return {
         assetClass: currentAssetClass,
         interval: currentInterval,
         scanStates,
-        activeAlerts
+        activeAlerts,
+        marketHealth  // ← now included so frontend always has NIFTY data
     };
+}
+
+function getMarketHealth() {
+    return marketHealth;
 }
 
 function getDailyLedger() {
     return dailyLedger;
 }
 
+// ─────────────────────────────────────────────
+// HOLD MONITORING HELPER
+// Called when user is in a trade and wants
+// the app to watch for exit conditions
+// Returns an exit alert if conditions are met
+// ─────────────────────────────────────────────
+
+function checkExitConditions(symbol, tradeType, entryPrice) {
+    const candles = candlesCache[symbol];
+    if (!candles || candles.length === 0) return null;
+
+    const sorted = [...candles].sort((a, b) => new Date(a.time) - new Date(b.time));
+    const latest = sorted[sorted.length - 1];
+    const currentPrice = latest.close;
+
+    const vwap = calculateVWAP(sorted);
+    const prevDay = getPrevDayData(sorted);
+
+    const istTimeVal = getISTTimeVal();
+
+    // ── Exit conditions for SHORT trade ──
+    if (tradeType === 'SHORT') {
+        const reasons = [];
+
+        // Price moved back above today's open — fade failed
+        const todaySorted = sorted.filter(c => {
+            const ms = new Date(c.time).getTime() + (5.5 * 60 * 60 * 1000);
+            const d = new Date(ms);
+            return d.toISOString().slice(0, 10) === new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        });
+        if (todaySorted.length > 0) {
+            const todayOpen = todaySorted[0].open;
+            if (currentPrice > todayOpen) reasons.push('Price reclaimed today\'s open — fade failed');
+        }
+
+        // RSI turning back up strongly
+        const prices = sorted.map(c => c.close);
+        const { calculateRSI: rsiCalc } = require('./scanner');
+        // We use the exported one from scanner
+        if (latest.rsi && latest.rsi > 62) reasons.push(`RSI ${latest.rsi} turning bullish`);
+
+        // NIFTY suddenly strong
+        if (marketHealth.status === 'STRONG') reasons.push('Market (NIFTY) turned strongly bullish');
+
+        // Time-based exit reminder
+        if (istTimeVal >= 1430 && istTimeVal <= 1445) reasons.push('Market closing in ~45 minutes — consider booking');
+        if (istTimeVal >= 1500) reasons.push('Market closing in ~15 minutes — exit now');
+
+        // Profit lock: price near target 1 (VWAP)
+        const profitPct = ((entryPrice - currentPrice) / entryPrice) * 100;
+        if (vwap && currentPrice <= vwap * 1.002) reasons.push(`Price near Target 1 (VWAP ₹${vwap?.toFixed(2)}) — consider partial booking`);
+
+        // Full gap fill
+        if (prevDay && currentPrice <= prevDay.close * 1.002) reasons.push(`Price near Target 2 (Gap fill ₹${prevDay?.close?.toFixed(2)}) — consider full exit`);
+
+        if (reasons.length > 0) {
+            return {
+                symbol,
+                tradeType,
+                currentPrice,
+                entryPrice,
+                profitPct: parseFloat(profitPct.toFixed(2)),
+                vwap,
+                reasons,
+                urgency: reasons.some(r => r.includes('closing')) ? 'HIGH' : 'MEDIUM'
+            };
+        }
+    }
+
+    return null;
+}
+
+// ─────────────────────────────────────────────
+// EXPORTS
+// ─────────────────────────────────────────────
+
 module.exports = {
     startIntradayScanner,
     stopIntradayScanner,
     getScannerState,
+    getMarketHealth,
     getDailyLedger,
+    checkExitConditions,
     STOCK_LISTS,
+    NIFTY_SYMBOL,
     scannerEmitter,
     candlesCache
 };

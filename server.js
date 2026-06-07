@@ -1,7 +1,16 @@
 const express = require('express');
 const path = require('path');
 const { streamSymbol, processCandlesAndGetState } = require('./scanner');
-const { startIntradayScanner, stopIntradayScanner, getScannerState, scannerEmitter, candlesCache } = require('./intradayScanner');
+const {
+    startIntradayScanner,
+    stopIntradayScanner,
+    getScannerState,
+    getMarketHealth,
+    getDailyLedger,
+    checkExitConditions,
+    scannerEmitter,
+    candlesCache
+} = require('./intradayScanner');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,7 +18,11 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
-// Single Symbol SSE Stream
+// ─────────────────────────────────────────────
+// SINGLE SYMBOL SSE STREAM
+// Used by the single-stock chart page
+// ─────────────────────────────────────────────
+
 app.get('/api/stream', async (req, res) => {
     const symbol = req.query.symbol;
     const interval = req.query.interval || '1D';
@@ -20,53 +33,37 @@ app.get('/api/stream', async (req, res) => {
     const useHeikinAshi = req.query.useHeikinAshi === 'true';
     const confirmations = req.query.confirmations ? req.query.confirmations.split(',') : [];
 
-    if (!symbol) {
-        return res.status(400).json({ error: 'Symbol is required' });
-    }
+    if (!symbol) return res.status(400).json({ error: 'Symbol is required' });
 
-    // Set headers for Server-Sent Events
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders(); // flush the headers to establish SSE
+    res.flushHeaders();
 
-    // Check if background scanner is running and already scanning this symbol at this interval
+    // If background scanner is already watching this symbol at same interval,
+    // reuse its live candle cache instead of opening a new browser tab
     const bState = getScannerState();
     const isScannedByBackground = bState.scanStates[symbol] !== undefined && bState.interval === interval;
 
     if (isScannedByBackground && candlesCache[symbol] && candlesCache[symbol].length > 0) {
-        console.log(`[SSE] Reusing active background stream for ${symbol} at ${interval}`);
-        
+        console.log(`[SSE] Reusing background stream for ${symbol} at ${interval}`);
+
         const sendUpdate = (candlesData) => {
             const state = processCandlesAndGetState(candlesData, symbol, interval, {
-                strategy,
-                period,
-                fastPeriod,
-                slowPeriod,
-                useHeikinAshi,
-                confirmations
+                strategy, period, fastPeriod, slowPeriod, useHeikinAshi, confirmations
             });
             if (state) {
-                try {
-                    res.write(`data: ${JSON.stringify(state)}\n\n`);
-                } catch (e) {
-                    console.error('[SSE] Failed to write shared update to res:', e.message);
-                }
+                try { res.write(`data: ${JSON.stringify(state)}\n\n`); } catch (e) { }
             }
         };
 
-        // Immediately send the first state from memory cache
         sendUpdate(candlesCache[symbol]);
 
-        // Register listener for live ticks on this symbol
         const updateListener = (data) => {
-            if (data.symbol === symbol) {
-                sendUpdate(data.candles);
-            }
+            if (data.symbol === symbol) sendUpdate(data.candles);
         };
 
         scannerEmitter.on('update', updateListener);
-
         req.on('close', () => {
             console.log(`[SSE] Disconnected shared stream: ${symbol}`);
             scannerEmitter.off('update', updateListener);
@@ -74,14 +71,12 @@ app.get('/api/stream', async (req, res) => {
         return;
     }
 
-    console.log(`[SSE] Client connected (New browser tap): ${symbol} at ${interval} with strategy ${strategy}`);
+    console.log(`[SSE] New browser tab: ${symbol} at ${interval} strategy: ${strategy}`);
 
     let cleanupStream = null;
-
     try {
         const options = { strategy, period, fastPeriod, slowPeriod, useHeikinAshi, confirmations };
         cleanupStream = await streamSymbol(symbol, interval, options, (state) => {
-            // Send the updated state to the client
             res.write(`data: ${JSON.stringify(state)}\n\n`);
         });
     } catch (error) {
@@ -90,28 +85,32 @@ app.get('/api/stream', async (req, res) => {
         res.end();
     }
 
-    // Handle client disconnect
     req.on('close', async () => {
-        console.log(`[SSE] Client disconnected (New browser tap): ${symbol}`);
-        if (cleanupStream) {
-            await cleanupStream();
-        }
+        console.log(`[SSE] Client disconnected: ${symbol}`);
+        if (cleanupStream) await cleanupStream();
     });
 });
 
-// Intraday Multi-Stock SSE Stream
+// ─────────────────────────────────────────────
+// INTRADAY MULTI-STOCK SSE STREAM
+// Used by the intraday scanner dashboard
+// ─────────────────────────────────────────────
+
 let intradayClients = [];
 
 function broadcastIntraday(data) {
     const payload = `data: ${JSON.stringify(data)}\n\n`;
     intradayClients.forEach(client => {
-        try {
-            client.write(payload);
-        } catch (e) {
+        try { client.write(payload); } catch (e) {
             console.error('[SSE-Intraday] Error writing to client:', e.message);
         }
     });
 }
+
+// Also broadcast market health updates to all intraday clients
+scannerEmitter.on('marketHealth', (health) => {
+    broadcastIntraday({ marketHealth: health });
+});
 
 app.get('/api/intraday-stream', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -119,21 +118,25 @@ app.get('/api/intraday-stream', (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    console.log('[SSE-Intraday] Client connected to multi-stock scanner');
+    console.log('[SSE-Intraday] Client connected');
     intradayClients.push(res);
 
-    // Immediately send the current cached states and alerts to the newly connected client
+    // Send current state immediately on connect
     const currentState = getScannerState();
-    res.write(`data: ${JSON.stringify({ states: currentState.scanStates, alerts: currentState.activeAlerts })}\n\n`);
+    res.write(`data: ${JSON.stringify({
+        states: currentState.scanStates,
+        alerts: currentState.activeAlerts,
+        marketHealth: currentState.marketHealth
+    })}\n\n`);
 
-    // If this is the first client, start the background browser scanner
+    // Start scanner if this is the first client
     if (intradayClients.length === 1) {
         const config = getScannerState();
         startIntradayScanner(
             config.assetClass,
             config.interval,
             (alert) => broadcastIntraday({ alert }),
-            (states) => broadcastIntraday({ states })
+            (states) => broadcastIntraday({ states, marketHealth: getMarketHealth() })
         ).catch(err => {
             console.error('[SSE-Intraday] Error starting scanner:', err);
         });
@@ -143,52 +146,91 @@ app.get('/api/intraday-stream', (req, res) => {
         console.log('[SSE-Intraday] Client disconnected');
         intradayClients = intradayClients.filter(c => c !== res);
 
-        // If no clients are active, shutdown the Playwright background tabs to save resources
+        // Stop scanner when no clients remain
         if (intradayClients.length === 0) {
             await stopIntradayScanner();
         }
     });
 });
 
+// ─────────────────────────────────────────────
+// DAILY LEDGER — all signals generated today
+// ─────────────────────────────────────────────
+
 app.get('/api/daily-ledger', (req, res) => {
     try {
-        const { getDailyLedger } = require('./intradayScanner');
         res.json({ success: true, ledger: getDailyLedger() });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
 });
 
-// Configure Background Scanner Settings
+// ─────────────────────────────────────────────
+// MARKET HEALTH — current NIFTY status
+// ─────────────────────────────────────────────
+
+app.get('/api/market-health', (req, res) => {
+    try {
+        res.json({ success: true, health: getMarketHealth() });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// ─────────────────────────────────────────────
+// EXIT CONDITIONS CHECK
+// Called by focus mode when user is in a trade
+// POST body: { symbol, tradeType: 'SHORT'|'LONG', entryPrice }
+// ─────────────────────────────────────────────
+
+app.post('/api/check-exit', (req, res) => {
+    const { symbol, tradeType, entryPrice } = req.body;
+    if (!symbol || !tradeType || !entryPrice) {
+        return res.status(400).json({ error: 'symbol, tradeType, entryPrice required' });
+    }
+    try {
+        const exitAlert = checkExitConditions(symbol, tradeType, parseFloat(entryPrice));
+        res.json({ success: true, exitAlert });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// ─────────────────────────────────────────────
+// SCANNER CONFIG — change asset class / interval
+// ─────────────────────────────────────────────
+
 app.post('/api/intraday-config', async (req, res) => {
     const { assetClass, interval } = req.body;
     if (!assetClass || !interval) {
         return res.status(400).json({ error: 'assetClass and interval are required' });
     }
 
-    console.log(`[SSE-Intraday] Config change requested: ${assetClass} at ${interval}m`);
+    console.log(`[Config] Change requested: ${assetClass} at ${interval}m`);
 
     try {
         if (intradayClients.length > 0) {
-            // Scanner is active, restart it with new config
             await startIntradayScanner(
-                assetClass,
-                interval,
+                assetClass, interval,
                 (alert) => broadcastIntraday({ alert }),
-                (states) => broadcastIntraday({ states })
+                (states) => broadcastIntraday({ states, marketHealth: getMarketHealth() })
             );
         } else {
-            // Scanner is idle, just update state variables by running the startup / shutdown sequence
             await startIntradayScanner(assetClass, interval, null, null);
             await stopIntradayScanner();
         }
         res.json({ success: true, state: getScannerState() });
     } catch (err) {
-        console.error('[SSE-Intraday] Error updating config:', err);
+        console.error('[Config] Error updating config:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
+// ─────────────────────────────────────────────
+// START SERVER
+// ─────────────────────────────────────────────
+
 app.listen(PORT, () => {
-    console.log(`Live Streaming Dashboard running on http://localhost:${PORT}`);
+    console.log(`\n🚀 Trading Dashboard running on http://localhost:${PORT}`);
+    console.log(`   Strategy: Gap & Fade Short | Indian Stocks (12 liquid)\n`);
 });
