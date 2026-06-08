@@ -1,12 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Live Market Strategy Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;700&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
     <div class="app-container">
         <header>
@@ -22,7 +26,7 @@
                     </button>
                     <div id="notificationDropdown" class="notification-dropdown hidden">
                         <div class="dropdown-header">
-                            <h4>Intraday A+ Setup Alerts</h4>
+                            <h4>Gap Fade & A+ Setup Alerts</h4>
                             <button id="clearAlertsBtn" class="clear-btn">Clear All</button>
                         </div>
                         <div id="alertsList" class="alerts-list">
@@ -65,7 +69,7 @@
                             </optgroup>
                         </select>
                     </div>
-                    
+
                     <div class="control-group">
                         <label for="intervalSelect">Timeframe</label>
                         <select id="intervalSelect">
@@ -76,41 +80,42 @@
                             <option value="1D">1 Day</option>
                         </select>
                     </div>
-    
+
                     <div class="control-group">
                         <label for="strategySelect">Strategy</label>
                         <select id="strategySelect">
                             <option value="APLUS_INTRADAY" selected>A+ Intraday Setup</option>
+                            <option value="GAP_FADE">Gap & Fade Short</option>
                             <option value="HMA_SLOPE">HMA Slope Reversal</option>
                             <option value="HMA_CROSS">HMA Fast/Slow Cross</option>
                             <option value="ZLEMA_CROSS">ZLEMA Crossover</option>
                         </select>
                     </div>
                 </div>
-    
+
                 <div class="control-row secondary-controls">
                     <div class="control-group hidden" id="singlePeriodGroup">
                         <label for="periodInput">Indicator Period</label>
                         <input type="number" id="periodInput" value="16" min="3" max="100">
                     </div>
-    
+
                     <div class="control-group hidden" id="fastPeriodGroup">
                         <label for="fastPeriodInput">Fast Period</label>
                         <input type="number" id="fastPeriodInput" value="9" min="2" max="50">
                     </div>
-    
+
                     <div class="control-group hidden" id="slowPeriodGroup">
                         <label for="slowPeriodInput">Slow Period</label>
                         <input type="number" id="slowPeriodInput" value="21" min="5" max="150">
                     </div>
-    
+
                     <div class="control-group checkbox-group">
                         <label class="checkbox-label">
                             <input type="checkbox" id="heikinAshiCheck">
                             <span>Heikin Ashi Candles</span>
                         </label>
                     </div>
-    
+
                     <div class="control-group checkbox-group" id="confirmationsCheckboxes">
                         <label class="checkbox-label">
                             <input type="checkbox" id="rsiConfirm">
@@ -122,210 +127,286 @@
                         </label>
                     </div>
                 </div>
-    
+
                 <div class="control-row button-row">
                     <button id="analyzeBtn" class="btn-primary">Analyze Market</button>
                 </div>
             </div>
-    
+
             <div id="loader" class="loader-container hidden">
                 <div class="spinner"></div>
                 <p>Intercepting WebSockets & loading live data stream (~15s)...</p>
             </div>
 
-        <main id="dashboard" class="dashboard-grid hidden">
-            <!-- Alert Section -->
-            <div id="signalAlert" class="alert-box">
-                <h2 id="alertText">Waiting for Analysis...</h2>
-                <p id="alertSubtext">Select an asset and click Analyze.</p>
-                <div class="voice-controls">
-                    <button id="muteBtn" class="btn-mute">🔊 Sound On</button>
-                    <div class="volume-slider">
-                        <label for="volumeRange">Voice Vol</label>
-                        <input type="range" id="volumeRange" min="0" max="1" step="0.1" value="0.8">
-                    </div>
-                </div>
-            </div>
-
-            <!-- Chart Section -->
-            <div class="card chart-card">
-                <h3>Real-Time Technical Chart</h3>
-                <div class="canvas-wrapper">
-                    <canvas id="tradingChart"></canvas>
-                </div>
-            </div>
-
-            <div class="dashboard-sidebar">
-                <!-- Current State -->
-                <div class="card current-state">
-                    <h3>Current Market State</h3>
-                    <div class="data-row">
-                        <span>Latest Price:</span>
-                        <strong id="priceVal">--</strong>
-                    </div>
-                    <div class="data-row">
-                        <span id="fastIndLabel">Fast Line:</span>
-                        <strong id="hmaVal">--</strong>
-                    </div>
-                    <div class="data-row" id="slowIndRow">
-                        <span>Slow Line:</span>
-                        <strong id="slowVal">--</strong>
-                    </div>
-                    <div class="data-row">
-                        <span>Trend Direction:</span>
-                        <strong id="trendVal">--</strong>
-                    </div>
-                    <div class="data-row">
-                        <span>Last Updated:</span>
-                        <strong id="timeVal">--</strong>
+            <main id="dashboard" class="dashboard-grid hidden">
+                <!-- Alert Section -->
+                <div id="signalAlert" class="alert-box">
+                    <h2 id="alertText">Waiting for Analysis...</h2>
+                    <p id="alertSubtext">Select an asset and click Analyze.</p>
+                    <div class="voice-controls">
+                        <button id="muteBtn" class="btn-mute">🔊 Sound On</button>
+                        <div class="volume-slider">
+                            <label for="volumeRange">Voice Vol</label>
+                            <input type="range" id="volumeRange" min="0" max="1" step="0.1" value="0.8">
+                        </div>
                     </div>
                 </div>
 
-                <!-- Backtest Statistics -->
-                <div class="card backtest-card">
-                    <h3>Live Backtest <span class="backtest-subtitle">(Last 100 Candles · ₹10k Capital Assumed · ₹60/trade)</span></h3>
-                    <div class="stats-grid stats-grid-3">
-                        <div class="stat-item">
-                            <span class="stat-lbl">Win Rate</span>
-                            <strong id="winRateVal" class="stat-val">--</strong>
+                <!-- Chart Section -->
+                <div class="card chart-card">
+                    <h3>Real-Time Technical Chart</h3>
+                    <div class="canvas-wrapper">
+                        <canvas id="tradingChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="dashboard-sidebar">
+                    <!-- Current State -->
+                    <div class="card current-state">
+                        <h3>Current Market State</h3>
+                        <div class="data-row">
+                            <span>Latest Price:</span>
+                            <strong id="priceVal">--</strong>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-lbl">W / L</span>
-                            <strong id="winLossVal" class="stat-val">--</strong>
+                        <div class="data-row">
+                            <span id="fastIndLabel">Fast Line:</span>
+                            <strong id="hmaVal">--</strong>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-lbl">Total Trades</span>
-                            <strong id="totalTradesVal" class="stat-val">--</strong>
+                        <div class="data-row" id="slowIndRow">
+                            <span>Slow Line:</span>
+                            <strong id="slowVal">--</strong>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-lbl">Net P&amp;L (₹)</span>
-                            <strong id="netProfitRsVal" class="stat-val">--</strong>
+                        <div class="data-row">
+                            <span>Trend Direction:</span>
+                            <strong id="trendVal">--</strong>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-lbl">Brokerage Paid</span>
-                            <strong id="brokerageVal" class="stat-val">--</strong>
+                        <div class="data-row">
+                            <span>Last Updated:</span>
+                            <strong id="timeVal">--</strong>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-lbl">Net % Gain</span>
-                            <strong id="netProfitVal" class="stat-val">--</strong>
+                    </div>
+
+                    <!-- Intraday Context Card (shown for GAP_FADE / APLUS_INTRADAY) -->
+                    <div class="card intraday-context-card hidden" id="intradayContextCard">
+                        <h3>Intraday Context</h3>
+                        <div class="data-row">
+                            <span>Today's Open:</span>
+                            <strong id="todayOpenVal">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Today's High:</span>
+                            <strong id="todayHighVal">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Prev Day Close:</span>
+                            <strong id="prevCloseVal">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Gap %:</span>
+                            <strong id="gapPctVal">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>VWAP:</span>
+                            <strong id="vwapVal">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>ATR (14):</span>
+                            <strong id="atrVal">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Daily RSI:</span>
+                            <strong id="dailyRsiVal">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Consec. Red Days:</span>
+                            <strong id="redDaysVal">--</strong>
+                        </div>
+                    </div>
+
+                    <!-- Gap Fade Signal Card (shown only when GAP_FADE signal fires) -->
+                    <div class="card gap-fade-card hidden" id="gapFadeCard">
+                        <h3>🎯 Gap Fade Signal <span id="gapFadeConfidenceBadge" class="result-badge open">--</span>
+                        </h3>
+                        <div class="data-row">
+                            <span>Gap %:</span>
+                            <strong id="gfGapPct">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Entry Zone:</span>
+                            <strong id="gfEntry">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Stop Loss:</span>
+                            <strong id="gfSL" style="color: var(--neon-red)">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Target 1 (VWAP):</span>
+                            <strong id="gfT1" style="color: var(--neon-green)">--</strong>
+                        </div>
+                        <div class="data-row">
+                            <span>Target 2 (Gap Fill):</span>
+                            <strong id="gfT2" style="color: var(--neon-green)">--</strong>
+                        </div>
+                        <div id="gfWarnings" class="gf-warnings"></div>
+                    </div>
+
+                    <!-- Backtest Statistics -->
+                    <div class="card backtest-card">
+                        <h3>Live Backtest <span class="backtest-subtitle">(Last 100 Candles · ₹10k Capital Assumed ·
+                                ₹60/trade)</span></h3>
+                        <div class="stats-grid stats-grid-3">
+                            <div class="stat-item">
+                                <span class="stat-lbl">Win Rate</span>
+                                <strong id="winRateVal" class="stat-val">--</strong>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">W / L</span>
+                                <strong id="winLossVal" class="stat-val">--</strong>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Total Trades</span>
+                                <strong id="totalTradesVal" class="stat-val">--</strong>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Net P&amp;L (₹)</span>
+                                <strong id="netProfitRsVal" class="stat-val">--</strong>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Brokerage Paid</span>
+                                <strong id="brokerageVal" class="stat-val">--</strong>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Net % Gain</span>
+                                <strong id="netProfitVal" class="stat-val">--</strong>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Full Trade Log -->
-            <div class="card trade-log-card">
-                <div class="trade-log-header">
-                    <h3>Full Trade Log <span class="backtest-subtitle">(A+ Setup · After Brokerage)</span></h3>
-                    <button id="toggleTradeLog" class="btn-toggle-log">Show Log ▼</button>
+                <!-- Full Trade Log -->
+                <div class="card trade-log-card">
+                    <div class="trade-log-header">
+                        <h3>Full Trade Log <span class="backtest-subtitle">(A+ Setup · After Brokerage)</span></h3>
+                        <button id="toggleTradeLog" class="btn-toggle-log">Show Log ▼</button>
+                    </div>
+                    <div id="tradeLogContainer" class="trade-log-container hidden">
+                        <div class="table-container">
+                            <table id="tradeLogTable">
+                                <thead>
+                                    <tr>
+                                        <th>Type</th>
+                                        <th>Entry Time</th>
+                                        <th>Entry ₹</th>
+                                        <th>Exit Time</th>
+                                        <th>Exit ₹</th>
+                                        <th>Gross ₹</th>
+                                        <th>Brok. ₹</th>
+                                        <th>Net ₹</th>
+                                        <th>%</th>
+                                        <th>Result</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tradeLogBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
-                <div id="tradeLogContainer" class="trade-log-container hidden">
+
+                <!-- Recent Signals -->
+                <div class="card recent-signals">
+                    <h3>Latest Signals</h3>
                     <div class="table-container">
-                        <table id="tradeLogTable">
+                        <table id="signalsTable">
                             <thead>
                                 <tr>
-                                    <th>Type</th>
-                                    <th>Entry Time</th>
-                                    <th>Entry ₹</th>
-                                    <th>Exit Time</th>
-                                    <th>Exit ₹</th>
-                                    <th>Gross ₹</th>
-                                    <th>Brok. ₹</th>
-                                    <th>Net ₹</th>
-                                    <th>%</th>
-                                    <th>Result</th>
+                                    <th>Time</th>
+                                    <th>Price</th>
+                                    <th>Signal</th>
                                 </tr>
                             </thead>
-                            <tbody id="tradeLogBody">
+                            <tbody>
+                                <!-- Populated dynamically -->
                             </tbody>
                         </table>
                     </div>
                 </div>
+            </main>
+        </div> <!-- Close #singleStockView -->
+
+        <!-- Multi Stock View Container -->
+        <div id="multiStockView" class="view-panel hidden">
+            <div class="controls-glass">
+                <div class="control-row">
+                    <div class="control-group">
+                        <label for="multiAssetSelect">Intraday Scanner Asset Group</label>
+                        <select id="multiAssetSelect">
+                            <option value="INDIAN_STOCKS" selected>Top Indian Large Caps</option>
+                            <option value="US_STOCKS">Top US Large Caps</option>
+                            <option value="CRYPTO">Top Cryptocurrencies</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="multiIntervalSelect">Timeframe</label>
+                        <select id="multiIntervalSelect">
+                            <option value="1">1 Min</option>
+                            <option value="5" selected>5 Min</option>
+                            <option value="10">10 Min</option>
+                            <option value="15">15 Min</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>Scanner Status</label>
+                        <div class="scanner-status-indicator">
+                            <span id="scannerStatusDot" class="status-dot pulsing-blue"></span>
+                            <span id="scannerStatusText">Loading Scanner...</span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <!-- Recent Signals -->
-            <div class="card recent-signals">
-                <h3>Latest Signals</h3>
+            <div id="marketHealthBanner" class="market-health-banner hidden">
+                <span>🏛️ NIFTY Market Health:</span>
+                <span id="mhLabel" class="mh-label mh-neutral">Loading...</span>
+                <span id="mhDetails" style="color: var(--text-muted); font-size: 0.8rem;"></span>
+            </div>
+
+            <div class="scanner-grid" id="scannerGrid">
+                <!-- Populated dynamically with 12 stock cards -->
+            </div>
+        </div>
+
+        <!-- Daily Ledger View Container -->
+        <div id="dailyLedgerView" class="view-panel hidden">
+            <div class="card trade-log-card" style="margin-top: 1.5rem;">
+                <div class="trade-log-header">
+                    <h3>Today's Global Trades <span class="backtest-subtitle">(All Scanned Stocks)</span></h3>
+                    <button id="refreshLedgerBtn" class="btn-primary" style="padding: 0.5rem 1rem;">Refresh
+                        Ledger</button>
+                </div>
                 <div class="table-container">
-                    <table id="signalsTable">
+                    <table class="data-table">
                         <thead>
                             <tr>
                                 <th>Time</th>
-                                <th>Price</th>
+                                <th>Symbol</th>
                                 <th>Signal</th>
+                                <th>Trigger Price</th>
+                                <th>Probability</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            <!-- Populated dynamically -->
+                        <tbody id="dailyLedgerTableBody">
+                            <tr>
+                                <td colspan="6" style="text-align: center; color: #94a3b8;">No trades executed today
+                                    yet.</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
             </div>
-        </main>
-    </div> <!-- Close #singleStockView -->
-
-    <!-- Multi Stock View Container -->
-    <div id="multiStockView" class="view-panel hidden">
-        <div class="controls-glass">
-            <div class="control-row">
-                <div class="control-group">
-                    <label for="multiAssetSelect">Intraday Scanner Asset Group</label>
-                    <select id="multiAssetSelect">
-                        <option value="INDIAN_STOCKS" selected>Top Indian Large Caps</option>
-                        <option value="US_STOCKS">Top US Large Caps</option>
-                        <option value="CRYPTO">Top Cryptocurrencies</option>
-                    </select>
-                </div>
-                <div class="control-group">
-                    <label for="multiIntervalSelect">Timeframe</label>
-                    <select id="multiIntervalSelect">
-                        <option value="1">1 Min</option>
-                        <option value="5" selected>5 Min</option>
-                        <option value="10">10 Min</option>
-                        <option value="15">15 Min</option>
-                    </select>
-                </div>
-                <div class="control-group">
-                    <label>Scanner Status</label>
-                    <div class="scanner-status-indicator">
-                        <span id="scannerStatusDot" class="status-dot pulsing-blue"></span>
-                        <span id="scannerStatusText">Loading Scanner...</span>
-                    </div>
-                </div>
-            </div>
         </div>
-
-        <div class="scanner-grid" id="scannerGrid">
-            <!-- Populated dynamically with 10 stock cards -->
-        </div>
-    </div>
-    
-    <!-- Daily Ledger View Container -->
-    <div id="dailyLedgerView" class="view-panel hidden">
-        <div class="card trade-log-card" style="margin-top: 1.5rem;">
-            <div class="trade-log-header">
-                <h3>Today's Global Trades <span class="backtest-subtitle">(All Scanned Stocks)</span></h3>
-                <button id="refreshLedgerBtn" class="btn-primary" style="padding: 0.5rem 1rem;">Refresh Ledger</button>
-            </div>
-            <div class="table-container">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Symbol</th>
-                            <th>Signal</th>
-                            <th>Trigger Price</th>
-                            <th>Probability</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="dailyLedgerTableBody">
-                        <tr><td colspan="6" style="text-align: center; color: #94a3b8;">No trades executed today yet.</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    <script src="app.js"></script>
+        <script src="app.js"></script>
 </body>
+
 </html>

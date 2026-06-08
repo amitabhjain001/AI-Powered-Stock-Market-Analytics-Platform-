@@ -403,8 +403,8 @@ function detectGapFadeShort(candles, symbol) {
 
     // Get IST time right now
     const nowIST = getISTTime(new Date().toISOString());
-    // Only run this during the morning window 9:15 AM - 10:30 AM IST
-    if (nowIST.timeVal < 915 || nowIST.timeVal > 1030) return null;
+    // Only run this during the window 9:15 AM - 12:30 PM IST
+    if (nowIST.timeVal < 920 || nowIST.timeVal > 1230) return null;
 
     // ── Step 1: Get previous day data ──
     const prevDay = getPrevDayData(candles);
@@ -422,8 +422,8 @@ function detectGapFadeShort(candles, symbol) {
     // ── Step 3: Calculate gap % ──
     const gapPercent = ((todayOpen - prevDay.close) / prevDay.close) * 100;
 
-    // Only proceed if gap is 1.5% to 3.5% up
-    if (gapPercent < 1.5 || gapPercent > 3.5) return null;
+    // Only proceed if gap is 0.8% to 4.5% up
+    if (gapPercent < 0.8 || gapPercent > 4.5) return null;
 
     // ── Step 4: Check price is fading (below today's open) ──
     const isFading = currentPrice < todayOpen;
@@ -439,12 +439,12 @@ function detectGapFadeShort(candles, symbol) {
     // If price is already below VWAP, the move may be done
     if (!aboveVWAP) return null;
 
-    // ── Step 6: RSI on 5-min ── should be 52-75, not already crashed
+    // ── Step 6: RSI on 5-min ── should be 45-78, not already crashed
     const prices = candles.map(c => c.close);
     const rsiArr = calculateRSI(prices, 14);
     const currentRSI = rsiArr[rsiArr.length - 1];
     if (currentRSI === null) return null;
-    const rsiOk = currentRSI >= 50 && currentRSI <= 76;
+    const rsiOk = currentRSI >= 45 && currentRSI <= 78;
     if (!rsiOk) return null;
 
     // ── Step 7: Volume picking up (selling pressure) ──
@@ -476,11 +476,12 @@ function detectGapFadeShort(candles, symbol) {
     let score = 0;
     if (isFading) score++;
     if (firstCandleBearish) score++;
-    if (currentRSI >= 58 && currentRSI <= 72) score++; // ideal RSI zone for short
+    if (currentRSI >= 55 && currentRSI <= 72) score++;   // ideal RSI zone for short
     if (volumeOk) score++;
-    if (gapPercent >= 1.8) score++; // bigger gap = more room to fade
-    if (redDays === 0) score++; // fresh stock, not exhausted
-    if (score >= 5) confidence = 'HIGH';
+    if (gapPercent >= 1.5) score++;                       // proper gap = more room to fade
+    if (gapPercent >= 2.5) score++;                       // large gap = extra conviction
+    if (redDays === 0) score++;                           // fresh stock, not exhausted
+    if (score >= 6) confidence = 'HIGH';
     else if (score >= 3) confidence = 'MEDIUM';
     else confidence = 'LOW';
 
@@ -512,7 +513,8 @@ function detectGapFadeShort(candles, symbol) {
         warnings: [
             bounceRisk ? `⚠️ ${redDays} consecutive red days — bounce risk` : null,
             dailyRSI && dailyRSI < 45 ? `⚠️ Daily RSI ${dailyRSI} — stock is weak, may bounce` : null,
-            gapPercent > 3.0 ? '⚠️ Large gap — verify no news driving this' : null,
+            gapPercent < 1.5 ? '⚠️ Small gap (0.8–1.5%) — weaker fade probability, wait for confirmation' : null,
+            gapPercent > 3.5 ? '⚠️ Large gap (>3.5%) — verify no news driving this' : null,
         ].filter(Boolean)
     };
 }
