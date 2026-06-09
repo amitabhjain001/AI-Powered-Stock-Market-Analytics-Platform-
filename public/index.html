@@ -371,6 +371,52 @@
                 <span id="mhDetails" style="color: var(--text-muted); font-size: 0.8rem;"></span>
             </div>
 
+            <!-- NIFTY Deep Analysis Panel -->
+            <div id="niftyAnalysisPanel" class="nifty-analysis-panel hidden">
+                <div class="nifty-panel-header">
+                    <span class="nifty-panel-title">🏛️ NIFTY 50 — Deep Analysis</span>
+                    <span id="niftyPanelStatus" class="nifty-status-badge">Loading...</span>
+                </div>
+                <div class="nifty-panel-grid">
+                    <!-- OI Trend -->
+                    <div class="nifty-metric-card">
+                        <div class="nifty-metric-label">Futures OI Trend</div>
+                        <div id="niftyOITrend" class="nifty-metric-value">—</div>
+                        <div id="niftyOIValue" class="nifty-metric-sub">OI: —</div>
+                    </div>
+                    <!-- Support / Resistance -->
+                    <div class="nifty-metric-card">
+                        <div class="nifty-metric-label">Intraday S/R</div>
+                        <div id="niftyResistance" class="nifty-metric-value" style="color: var(--neon-red)">R: —</div>
+                        <div id="niftySupport" class="nifty-metric-sub" style="color: var(--neon-green)">S: —</div>
+                    </div>
+                    <!-- Break of Structure -->
+                    <div class="nifty-metric-card">
+                        <div class="nifty-metric-label">Break of Structure</div>
+                        <div id="niftyBOS" class="nifty-metric-value">—</div>
+                        <div id="niftyBOSSub" class="nifty-metric-sub">—</div>
+                    </div>
+                    <!-- Price + VWAP -->
+                    <div class="nifty-metric-card">
+                        <div class="nifty-metric-label">Price vs VWAP</div>
+                        <div id="niftyPrice" class="nifty-metric-value">—</div>
+                        <div id="niftyVWAP" class="nifty-metric-sub">VWAP: —</div>
+                    </div>
+                    <!-- Gap -->
+                    <div class="nifty-metric-card">
+                        <div class="nifty-metric-label">Today's Gap</div>
+                        <div id="niftyGap" class="nifty-metric-value">—</div>
+                        <div id="niftyRSI" class="nifty-metric-sub">RSI: —</div>
+                    </div>
+                    <!-- Short Environment -->
+                    <div class="nifty-metric-card">
+                        <div class="nifty-metric-label">Short Environment</div>
+                        <div id="niftyShortEnv" class="nifty-metric-value">—</div>
+                        <div id="niftyShortSub" class="nifty-metric-sub">—</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="scanner-grid" id="scannerGrid">
                 <!-- Populated dynamically with 12 stock cards -->
             </div>

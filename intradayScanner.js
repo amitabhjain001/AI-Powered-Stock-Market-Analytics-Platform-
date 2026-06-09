@@ -103,6 +103,11 @@ let marketHealth = {
 // NIFTY raw candles cache
 let niftyCandles = [];
 
+// NIFTY futures OI data (from NSE:NIFTY1! tab)
+// Each entry: { time, oi, price }
+let niftyOIHistory = [];
+let latestNiftyOI = null;
+
 // ─────────────────────────────────────────────
 // HELPER: IST time check
 // ─────────────────────────────────────────────
@@ -112,6 +117,211 @@ function getISTTimeVal() {
     const istMs = now.getTime() + (5.5 * 60 * 60 * 1000);
     const ist = new Date(istMs);
     return ist.getUTCHours() * 100 + ist.getUTCMinutes();
+}
+
+// ─────────────────────────────────────────────
+// OI ANALYSIS — interpret NIFTY futures OI trend
+// Long Buildup  : price ↑, OI ↑
+// Short Covering: price ↑, OI ↓
+// Short Buildup : price ↓, OI ↑
+// Long Unwinding: price ↓, OI ↓
+// ─────────────────────────────────────────────
+
+function interpretOITrend(oiHistory) {
+    if (!oiHistory || oiHistory.length < 3) return { trend: 'UNKNOWN', label: 'Waiting for OI data...', bullish: null };
+
+    const recent = oiHistory.slice(-6); // last 6 ticks
+    const first = recent[0];
+    const last = recent[recent.length - 1];
+
+    const oiChange = last.oi - first.oi;
+    const priceChange = last.price - first.price;
+
+    const oiUp = oiChange > 0;
+    const priceUp = priceChange > 0;
+
+    if (priceUp && oiUp) return { trend: 'LONG_BUILDUP', label: '🟢 Long Buildup — bulls adding', bullish: true };
+    if (priceUp && !oiUp) return { trend: 'SHORT_COVERING', label: '🟡 Short Covering — bears exiting', bullish: true };
+    if (!priceUp && oiUp) return { trend: 'SHORT_BUILDUP', label: '🔴 Short Buildup — bears adding', bullish: false };
+    if (!priceUp && !oiUp) return { trend: 'LONG_UNWINDING', label: '🟠 Long Unwinding — bulls exiting', bullish: false };
+
+    return { trend: 'UNKNOWN', label: 'Insufficient OI data', bullish: null };
+}
+
+// ─────────────────────────────────────────────
+// SUPPORT / RESISTANCE from NIFTY candles
+// Simple: recent pivot highs and lows
+// ─────────────────────────────────────────────
+
+function getSupportResistance(candles) {
+    if (!candles || candles.length < 10) return { support: null, resistance: null };
+
+    // Use only today's candles for intraday S/R
+    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    const todayStr = nowIST.toISOString().slice(0, 10);
+    const todayCandles = candles.filter(c => {
+        const d = new Date(new Date(c.time).getTime() + 5.5 * 60 * 60 * 1000);
+        return d.toISOString().slice(0, 10) === todayStr;
+    });
+
+    if (todayCandles.length < 3) {
+        // Fall back to last 20 candles across days
+        const slice = candles.slice(-20);
+        return {
+            support: parseFloat(Math.min(...slice.map(c => c.low)).toFixed(2)),
+            resistance: parseFloat(Math.max(...slice.map(c => c.high)).toFixed(2))
+        };
+    }
+
+    const highs = todayCandles.map(c => c.high);
+    const lows = todayCandles.map(c => c.low);
+
+    // Pivot-style: find local high/low clusters
+    const resistance = parseFloat(Math.max(...highs).toFixed(2));
+    const support = parseFloat(Math.min(...lows).toFixed(2));
+
+    // Second-level: strongest intraday cluster (most touches)
+    // Simple approach — round to nearest 50 and count touches
+    const roundTo50 = v => Math.round(v / 50) * 50;
+    const highClusters = {};
+    highs.forEach(h => { const k = roundTo50(h); highClusters[k] = (highClusters[k] || 0) + 1; });
+    const topResistance = Object.entries(highClusters).sort((a, b) => b[1] - a[1])[0];
+
+    const lowClusters = {};
+    lows.forEach(l => { const k = roundTo50(l); lowClusters[k] = (lowClusters[k] || 0) + 1; });
+    const topSupport = Object.entries(lowClusters).sort((a, b) => b[1] - a[1])[0];
+
+    return {
+        support: topSupport ? parseFloat(topSupport[0]) : support,
+        resistance: topResistance ? parseFloat(topResistance[0]) : resistance,
+        dayHigh: resistance,
+        dayLow: support
+    };
+}
+
+// ─────────────────────────────────────────────
+// BREAK OF STRUCTURE DETECTION
+// BOS = price closes beyond previous swing H/L
+// ─────────────────────────────────────────────
+
+function detectBOS(candles) {
+    if (!candles || candles.length < 10) return { bos: null, label: 'Waiting for data' };
+
+    const sorted = [...candles].sort((a, b) => new Date(a.time) - new Date(b.time));
+    const recent = sorted.slice(-15); // last 15 candles
+
+    // Swing high = highest high in first half
+    // BOS bearish = current close breaks below swing low
+    const mid = Math.floor(recent.length / 2);
+    const leftHalf = recent.slice(0, mid);
+    const rightHalf = recent.slice(mid);
+
+    const swingHigh = Math.max(...leftHalf.map(c => c.high));
+    const swingLow = Math.min(...leftHalf.map(c => c.low));
+    const currentClose = rightHalf[rightHalf.length - 1].close;
+    const currentHigh = rightHalf[rightHalf.length - 1].high;
+
+    if (currentClose > swingHigh) {
+        return { bos: 'BULLISH', label: `🔼 BOS Bullish — broke above ₹${swingHigh.toFixed(0)}`, level: swingHigh };
+    }
+    if (currentClose < swingLow) {
+        return { bos: 'BEARISH', label: `🔽 BOS Bearish — broke below ₹${swingLow.toFixed(0)}`, level: swingLow };
+    }
+
+    return { bos: null, label: `Range: ₹${swingLow.toFixed(0)} – ₹${swingHigh.toFixed(0)}`, swingHigh, swingLow };
+}
+
+// ─────────────────────────────────────────────
+// FULL NIFTY ANALYSIS — called by /api/nifty-analysis
+// ─────────────────────────────────────────────
+
+function getNiftyAnalysis() {
+    const health = marketHealth;
+    const oiTrend = interpretOITrend(niftyOIHistory);
+    const sr = getSupportResistance(niftyCandles);
+    const bos = detectBOS(niftyCandles);
+
+    return {
+        health,
+        oiTrend,
+        latestOI: latestNiftyOI,
+        oiHistory: niftyOIHistory.slice(-30), // last 30 ticks for mini-chart
+        supportResistance: sr,
+        bos,
+        candleCount: niftyCandles.length,
+        lastUpdated: new Date().toISOString()
+    };
+}
+
+// ─────────────────────────────────────────────
+// NIFTY FUTURES TAB — scrapes NSE:NIFTY1! for OI
+// Opens alongside the index tab
+// ─────────────────────────────────────────────
+
+async function startNiftyFuturesOITab(context) {
+    if (!context) return;
+
+    const page = await context.newPage();
+    activePages.push(page);
+
+    await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'stylesheet', 'font', 'media'].includes(type)) route.abort();
+        else route.continue();
+    });
+
+    page.on('websocket', ws => {
+        ws.on('framereceived', frame => {
+            if (!browser) return;
+            const payload = frame.payload.toString();
+            const messages = parseTradingViewWS(payload);
+
+            for (const msg of messages) {
+                const processBar = (bar) => {
+                    // NIFTY1! futures: v[0]=time, v[1]=open, v[2]=high, v[3]=low, v[4]=close, v[5]=volume, v[6]=OI
+                    if (!bar.v || bar.v.length < 7) return;
+                    const oi = bar.v[6];
+                    const price = bar.v[4];
+                    const time = new Date(bar.v[0] * 1000).toISOString();
+                    if (oi === null || oi === undefined) return;
+
+                    latestNiftyOI = { oi, price, time };
+
+                    // Update or push to OI history (keyed by time)
+                    const idx = niftyOIHistory.findIndex(e => e.time === time);
+                    if (idx !== -1) {
+                        niftyOIHistory[idx] = { time, oi, price };
+                    } else {
+                        niftyOIHistory.push({ time, oi, price });
+                        if (niftyOIHistory.length > 200) niftyOIHistory.shift();
+                    }
+
+                    console.log(`[NIFTY-OI] OI: ${oi.toLocaleString()} | Price: ${price}`);
+                };
+
+                if (msg.m === 'timescale_update' && msg.p && msg.p[1]) {
+                    const dataObj = msg.p[1];
+                    for (const key in dataObj) {
+                        if (dataObj[key].s) dataObj[key].s.forEach(processBar);
+                    }
+                }
+                if (msg.m === 'du' && msg.p && msg.p[1]) {
+                    const dataObj = msg.p[1];
+                    for (const key in dataObj) {
+                        if (dataObj[key].s) dataObj[key].s.forEach(processBar);
+                    }
+                }
+            }
+        });
+    });
+
+    // NSE:NIFTY1! = NIFTY near-month futures — has OI at bar.v[6]
+    const tvUrl = `https://www.tradingview.com/chart/?symbol=NSE:NIFTY1%21&interval=${currentInterval}`;
+    page.goto(tvUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(err => {
+        console.error('[NIFTY-OI] Error loading futures tab:', err.message);
+    });
+
+    console.log('[NIFTY-OI] Futures OI tab started for NSE:NIFTY1!');
 }
 
 // ─────────────────────────────────────────────
@@ -225,6 +435,8 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
     scanStates = {};
     candlesCache = {};
     niftyCandles = [];
+    niftyOIHistory = [];
+    latestNiftyOI = null;
     marketHealth = {
         status: 'UNKNOWN', label: 'Loading NIFTY...', shortFriendly: false,
         gapPercent: null, rsi: null, currentPrice: null, vwap: null
@@ -262,8 +474,10 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
         // ── Start NIFTY health tab first (only for Indian stocks) ──
         if (isIndian) {
             await startNiftyHealthTab(context);
-            // Give NIFTY tab 2 seconds head start before stocks start loading
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // Also start futures OI tab (NSE:NIFTY1!) for real OI data
+            await startNiftyFuturesOITab(context);
+            // Give NIFTY tabs 3 seconds head start before stocks start loading
+            await new Promise(resolve => setTimeout(resolve, 3000));
         }
 
         // ── Start one tab per stock ──
@@ -501,6 +715,8 @@ async function stopIntradayScanner() {
     console.log('[Scanner] Stopping...');
     activePages = [];
     niftyCandles = [];
+    niftyOIHistory = [];
+    latestNiftyOI = null;
 
     if (browser) {
         const activeBrowser = browser;
@@ -616,6 +832,7 @@ module.exports = {
     stopIntradayScanner,
     getScannerState,
     getMarketHealth,
+    getNiftyAnalysis,
     getDailyLedger,
     checkExitConditions,
     STOCK_LISTS,

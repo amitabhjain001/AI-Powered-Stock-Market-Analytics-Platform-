@@ -6,6 +6,7 @@ const {
     stopIntradayScanner,
     getScannerState,
     getMarketHealth,
+    getNiftyAnalysis,
     getDailyLedger,
     checkExitConditions,
     scannerEmitter,
@@ -172,6 +173,19 @@ app.get('/api/daily-ledger', (req, res) => {
 app.get('/api/market-health', (req, res) => {
     try {
         res.json({ success: true, health: getMarketHealth() });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// ─────────────────────────────────────────────
+// NIFTY FULL ANALYSIS — OI, S/R, BOS
+// Polled by frontend every 5s for NIFTY panel
+// ─────────────────────────────────────────────
+
+app.get('/api/nifty-analysis', (req, res) => {
+    try {
+        res.json({ success: true, analysis: getNiftyAnalysis() });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }

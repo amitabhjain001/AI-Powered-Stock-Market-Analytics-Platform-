@@ -1102,6 +1102,126 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // ─────────────────────────────────────────────
+    // NIFTY DEEP ANALYSIS PANEL
+    // Polls /api/nifty-analysis every 5s and
+    // updates the panel in the multi-stock view
+    // ─────────────────────────────────────────────
+
+    let niftyAnalysisInterval = null;
+
+    async function fetchNiftyAnalysis() {
+        try {
+            const res = await fetch('/api/nifty-analysis');
+            const data = await res.json();
+            if (!data.success || !data.analysis) return;
+            renderNiftyAnalysisPanel(data.analysis);
+        } catch (e) {
+            console.error('[NiftyPanel] fetch error:', e);
+        }
+    }
+
+    function renderNiftyAnalysisPanel(analysis) {
+        const panel = document.getElementById('niftyAnalysisPanel');
+        if (!panel) return;
+        panel.classList.remove('hidden');
+
+        const { health, oiTrend, latestOI, supportResistance: sr, bos } = analysis;
+
+        // Status badge
+        const statusEl = document.getElementById('niftyPanelStatus');
+        statusEl.textContent = health.label || 'Loading...';
+        statusEl.className = `nifty-status-badge mh-${(health.status || 'unknown').toLowerCase()}`;
+
+        // OI trend
+        const oiTrendEl = document.getElementById('niftyOITrend');
+        oiTrendEl.textContent = oiTrend.label || '—';
+        oiTrendEl.style.color = oiTrend.bullish === true ? 'var(--neon-green)'
+            : oiTrend.bullish === false ? 'var(--neon-red)' : '#fbbf24';
+
+        const oiValEl = document.getElementById('niftyOIValue');
+        if (latestOI && latestOI.oi) {
+            const oiFormatted = (latestOI.oi / 1e6).toFixed(2) + 'M';
+            oiValEl.textContent = `OI: ${oiFormatted}`;
+        } else {
+            oiValEl.textContent = 'OI: waiting for futures data...';
+        }
+
+        // Support / Resistance
+        const resEl = document.getElementById('niftyResistance');
+        const supEl = document.getElementById('niftySupport');
+        if (sr && sr.resistance) {
+            resEl.textContent = `R: ₹${sr.resistance.toLocaleString()}`;
+            supEl.textContent = `S: ₹${sr.support.toLocaleString()}`;
+        } else {
+            resEl.textContent = 'R: —';
+            supEl.textContent = 'S: —';
+        }
+
+        // BOS
+        const bosEl = document.getElementById('niftyBOS');
+        const bosSubEl = document.getElementById('niftyBOSSub');
+        if (bos) {
+            bosEl.textContent = bos.label || '—';
+            bosEl.style.color = bos.bos === 'BULLISH' ? 'var(--neon-green)'
+                : bos.bos === 'BEARISH' ? 'var(--neon-red)' : '#94a3b8';
+            if (bos.swingHigh && bos.swingLow) {
+                bosSubEl.textContent = `Swing: ₹${bos.swingLow?.toFixed(0)} – ₹${bos.swingHigh?.toFixed(0)}`;
+            } else if (bos.level) {
+                bosSubEl.textContent = `Break level: ₹${bos.level?.toFixed(0)}`;
+            } else {
+                bosSubEl.textContent = '';
+            }
+        }
+
+        // Price vs VWAP
+        const priceEl = document.getElementById('niftyPrice');
+        const vwapEl = document.getElementById('niftyVWAP');
+        if (health.currentPrice) {
+            priceEl.textContent = `₹${health.currentPrice.toLocaleString()}`;
+            priceEl.style.color = health.belowVWAP ? 'var(--neon-red)' : 'var(--neon-green)';
+        }
+        if (health.vwap) {
+            vwapEl.textContent = `VWAP: ₹${health.vwap.toLocaleString()}`;
+        }
+
+        // Gap + RSI
+        const gapEl = document.getElementById('niftyGap');
+        const rsiEl = document.getElementById('niftyRSI');
+        if (health.gapPercent !== null && health.gapPercent !== undefined) {
+            const sign = health.gapPercent >= 0 ? '+' : '';
+            gapEl.textContent = `${sign}${health.gapPercent}%`;
+            gapEl.style.color = health.gapPercent > 0 ? 'var(--neon-red)' : 'var(--neon-green)';
+        }
+        if (health.rsi !== null && health.rsi !== undefined) {
+            rsiEl.textContent = `RSI: ${health.rsi}`;
+        }
+
+        // Short environment
+        const shortEl = document.getElementById('niftyShortEnv');
+        const shortSubEl = document.getElementById('niftyShortSub');
+        if (health.shortFriendly) {
+            shortEl.textContent = '✅ Favourable for Shorts';
+            shortEl.style.color = 'var(--neon-green)';
+            shortSubEl.textContent = 'Market is weak/bearish';
+        } else if (health.status === 'STRONG') {
+            shortEl.textContent = '🚫 Unfavourable — Market Strong';
+            shortEl.style.color = 'var(--neon-red)';
+            shortSubEl.textContent = 'Avoid new shorts';
+        } else {
+            shortEl.textContent = '⚠️ Neutral — Use Caution';
+            shortEl.style.color = '#fbbf24';
+            shortSubEl.textContent = 'Wait for confirmation';
+        }
+    }
+
+    function startNiftyAnalysisPolling() {
+        fetchNiftyAnalysis(); // immediate fetch
+        if (niftyAnalysisInterval) clearInterval(niftyAnalysisInterval);
+        niftyAnalysisInterval = setInterval(fetchNiftyAnalysis, 5000);
+    }
+
     // Startup initializations
     connectIntradayScanner();
+    startNiftyAnalysisPolling();
 });
