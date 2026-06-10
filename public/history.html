@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signals History & Backtest - Trading AI</title>
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        .history-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem 1.5rem 3rem 1.5rem;
+        }
+        
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        
+        .history-header h2 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 2.2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 0;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 0.8rem;
+        }
+
+        /* Glassmorphism Controls Panel */
+        .filter-panel {
+            background: var(--bg-glass);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            padding: 1.2rem;
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            box-shadow: var(--card-shadow);
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 180px;
+        }
+
+        .filter-group label {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-bottom: 0.4rem;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-weight: 600;
+        }
+
+        .filter-input {
+            width: 100%;
+            padding: 0.6rem 0.8rem;
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid var(--border-glass);
+            border-radius: 8px;
+            color: white;
+            font-size: 0.9rem;
+            font-family: 'Inter', sans-serif;
+            outline: none;
+            transition: all 0.2s ease-in-out;
+        }
+
+        .filter-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+        }
+
+        .history-table-container {
+            background: var(--bg-glass);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--border-glass);
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: var(--card-shadow);
+            margin-top: 1.5rem;
+        }
+
+        .table-scroll {
+            overflow-x: auto;
+            max-height: 600px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: rgba(0, 0, 0, 0.4);
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 1.1rem 1.2rem;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        td {
+            padding: 1rem 1.2rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 0.9rem;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            display: inline-block;
+            letter-spacing: 0.5px;
+        }
+        
+        .badge.long { background: rgba(16, 185, 129, 0.12); color: var(--neon-green); border: 1px solid rgba(16, 185, 129, 0.25); }
+        .badge.short { background: rgba(244, 63, 94, 0.12); color: var(--neon-red); border: 1px solid rgba(244, 63, 94, 0.25); }
+        .badge.win { background: rgba(16, 185, 129, 0.15); color: var(--neon-green); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .badge.loss { background: rgba(244, 63, 94, 0.15); color: var(--neon-red); border: 1px solid rgba(244, 63, 94, 0.3); }
+        .badge.open { background: rgba(59, 130, 246, 0.15); color: var(--accent); border: 1px solid rgba(59, 130, 246, 0.3); }
+        
+        .reason-text {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            max-width: 280px;
+            line-height: 1.4;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--bg-glass);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--border-glass);
+            padding: 1.25rem 1.5rem;
+            border-radius: 16px;
+            text-align: left;
+            box-shadow: var(--card-shadow);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: var(--accent);
+            opacity: 0.5;
+        }
+
+        .stat-card.win-card::after { background: var(--neon-green); }
+        .stat-card.loss-card::after { background: var(--neon-red); }
+
+        .stat-value {
+            font-size: 2.2rem;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-top: 0.3rem;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+
+        .spinning {
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-right: 5px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .btn-loading {
+            background: rgba(59, 130, 246, 0.5) !important;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>Trading <span class="neon-text">AI</span></h1>
+            <p>Smart Money Concepts Signal History & Backtesting</p>
+        </header>
+
+        <nav class="controls-glass" style="flex-direction: row; justify-content: center; margin-bottom: 2rem;">
+            <a href="/" class="btn-primary" style="text-decoration: none; display: flex; align-items: center;">Live Dashboard</a>
+            <a href="/index.html" class="btn-primary" style="background: rgba(255,255,255,0.1); color: white; text-decoration: none; display: flex; align-items: center;">Single Stock Chart</a>
+            <a href="/history.html" class="btn-primary live-btn" style="text-decoration: none; display: flex; align-items: center;">Signal History</a>
+        </nav>
+
+        <div class="history-container">
+            <div class="history-header">
+                <h2>Signal History & Simulation Results</h2>
+                <div class="action-buttons">
+                    <button class="nav-btn" id="runBacktestBtn" style="background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%); color: white; border: none; font-weight: 600;">
+                        Run Backtest Simulation
+                    </button>
+                    <button class="nav-btn" onclick="fetchHistory()" id="refreshBtn">Refresh Data</button>
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="stats-grid" id="statsGrid">
+                <!-- Populate via Javascript -->
+            </div>
+
+            <!-- Filter Panel -->
+            <div class="filter-panel">
+                <div class="filter-group">
+                    <label for="searchSymbol">Search Symbol</label>
+                    <input type="text" id="searchSymbol" class="filter-input" placeholder="e.g. NSE:RELIANCE" oninput="applyFilters()">
+                </div>
+                <div class="filter-group">
+                    <label for="filterType">Trade Type</label>
+                    <select id="filterType" class="filter-input" onchange="applyFilters()">
+                        <option value="ALL">All Directions</option>
+                        <option value="LONG">LONG Only</option>
+                        <option value="SHORT">SHORT Only</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="filterResult">Result</label>
+                    <select id="filterResult" class="filter-input" onchange="applyFilters()">
+                        <option value="ALL">All Results</option>
+                        <option value="WIN">WINs</option>
+                        <option value="LOSS">LOSSes</option>
+                        <option value="OPEN">OPEN Trades</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="filterStrategy">Strategy</label>
+                    <select id="filterStrategy" class="filter-input" onchange="applyFilters()">
+                        <option value="ALL">All Strategies</option>
+                        <option value="SMART_MONEY">SMART_MONEY</option>
+                        <option value="GAP_FADE_SHORT">GAP_FADE_SHORT</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Historical Trades Table -->
+            <div class="history-table-container">
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date & Time</th>
+                                <th>Symbol</th>
+                                <th>Strategy</th>
+                                <th>Type</th>
+                                <th>Entry Price</th>
+                                <th>Exit Price</th>
+                                <th>Profit %</th>
+                                <th>Result</th>
+                                <th>Analysis / Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            <tr><td colspan="9" style="text-align:center;">Loading history ledger...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allSignals = [];
+
+        async function fetchHistory() {
+            const tbody = document.getElementById('historyTableBody');
+            try {
+                const response = await fetch('/api/signals-history');
+                const data = await response.json();
+                
+                if (data.success) {
+                    allSignals = data.history;
+                    applyFilters();
+                } else {
+                    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:red;">Error loading history</td></tr>`;
+                }
+            } catch (err) {
+                console.error(err);
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:red;">Failed to connect to server</td></tr>`;
+            }
+        }
+
+        function applyFilters() {
+            const searchVal = document.getElementById('searchSymbol').value.toUpperCase().trim();
+            const typeVal = document.getElementById('filterType').value;
+            const resultVal = document.getElementById('filterResult').value;
+            const strategyVal = document.getElementById('filterStrategy').value;
+
+            const filtered = allSignals.filter(sig => {
+                // Symbol Search
+                if (searchVal && !sig.symbol.toUpperCase().includes(searchVal)) return false;
+                
+                // Trade Direction Type
+                if (typeVal !== 'ALL') {
+                    const cleanType = (sig.type || '').toUpperCase();
+                    if (typeVal === 'LONG' && !(cleanType.includes('LONG') || cleanType === 'BUY')) return false;
+                    if (typeVal === 'SHORT' && !(cleanType.includes('SHORT') || cleanType === 'SELL')) return false;
+                }
+
+                // Trade Outcome Result
+                if (resultVal !== 'ALL') {
+                    const res = (sig.result || '').toUpperCase();
+                    if (resultVal === 'WIN' && !res.includes('WIN')) return false;
+                    if (resultVal === 'LOSS' && !res.includes('LOSS')) return false;
+                    if (resultVal === 'OPEN' && !res.includes('OPEN') && res !== '') return false;
+                }
+
+                // Strategy
+                if (strategyVal !== 'ALL') {
+                    const strat = (sig.strategy || sig.type || '').toUpperCase();
+                    if (strategyVal === 'SMART_MONEY' && !strat.includes('SMART')) return false;
+                    if (strategyVal === 'GAP_FADE_SHORT' && !strat.includes('GAP')) return false;
+                }
+
+                return true;
+            });
+
+            renderHistory(filtered);
+        }
+
+        function renderHistory(signals) {
+            // Sort by time descending
+            signals.sort((a, b) => new Date(b.entryTime || b.time) - new Date(a.entryTime || a.time));
+
+            const tbody = document.getElementById('historyTableBody');
+            tbody.innerHTML = '';
+
+            let totalTrades = 0;
+            let wins = 0;
+            let losses = 0;
+            let totalProfit = 0;
+
+            if (signals.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:#94a3b8;">No matching signals found.</td></tr>`;
+                updateStatsCards(0, 0, 0, 0);
+                return;
+            }
+
+            signals.forEach(sig => {
+                const tr = document.createElement('tr');
+                
+                // Format Date
+                const d = new Date(sig.entryTime || sig.time);
+                const dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                
+                // Result styling
+                let resultBadge = 'OPEN';
+                let resultClass = 'open';
+                
+                if (sig.result === 'WIN' || (sig.result && sig.result.includes('WIN'))) {
+                    resultClass = 'win';
+                    resultBadge = 'WIN';
+                    wins++;
+                    totalTrades++;
+                } else if (sig.result === 'LOSS' || (sig.result && sig.result.includes('LOSS'))) {
+                    resultClass = 'loss';
+                    resultBadge = 'LOSS';
+                    losses++;
+                    totalTrades++;
+                }
+
+                if (sig.profitPct) totalProfit += parseFloat(sig.profitPct);
+
+                // Type badge
+                const isLong = sig.type === 'LONG' || sig.type === 'ENTRY_LONG' || sig.type === 'BUY';
+                const typeClass = isLong ? 'long' : 'short';
+                const typeText = isLong ? 'LONG' : 'SHORT';
+
+                tr.innerHTML = `
+                    <td>${dateStr}</td>
+                    <td><strong>${sig.symbol}</strong></td>
+                    <td><span style="font-weight: 500;">${sig.strategy || 'SMART_MONEY'}</span></td>
+                    <td><span class="badge ${typeClass}">${typeText}</span></td>
+                    <td>₹${(sig.entryPrice || sig.price).toFixed(2)}</td>
+                    <td>${sig.exitPrice ? '₹' + sig.exitPrice.toFixed(2) : '—'}</td>
+                    <td style="color: ${sig.profitPct > 0 ? 'var(--neon-green)' : (sig.profitPct < 0 ? 'var(--neon-red)' : '')}; font-weight: 600;">
+                        ${sig.profitPct ? (sig.profitPct > 0 ? '+' : '') + sig.profitPct.toFixed(2) + '%' : '—'}
+                    </td>
+                    <td><span class="badge ${resultClass}">${resultBadge}</span></td>
+                    <td class="reason-text">${sig.reason || (sig.warnings ? sig.warnings.join(', ') : '') || 'Condition criteria met.'}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Update stats
+            const winRate = totalTrades > 0 ? ((wins / totalTrades) * 100).toFixed(1) : 0;
+            updateStatsCards(signals.length, totalTrades, winRate, totalProfit);
+        }
+
+        function updateStatsCards(totalSignals, closedTrades, winRate, totalProfit) {
+            const statsGrid = document.getElementById('statsGrid');
+            statsGrid.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">Total Signals Recorded</div>
+                    <div class="stat-value">${totalSignals}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Closed Trades</div>
+                    <div class="stat-value">${closedTrades}</div>
+                </div>
+                <div class="stat-card ${winRate >= 50 ? 'win-card' : 'loss-card'}">
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-value" style="color: ${winRate >= 50 ? 'var(--neon-green)' : 'var(--neon-red)'}">${winRate}%</div>
+                </div>
+                <div class="stat-card ${totalProfit >= 0 ? 'win-card' : 'loss-card'}">
+                    <div class="stat-label">Net Profit %</div>
+                    <div class="stat-value" style="color: ${totalProfit >= 0 ? 'var(--neon-green)' : 'var(--neon-red)'}">${(totalProfit >= 0 ? '+' : '') + totalProfit.toFixed(2)}%</div>
+                </div>
+            `;
+        }
+
+        // Backtest status polling logic
+        const runBtn = document.getElementById('runBacktestBtn');
+        let statusPollInterval = null;
+
+        async function checkBacktestStatus() {
+            try {
+                const res = await fetch('/api/backtest-status');
+                const data = await res.json();
+                
+                if (data.success && data.running) {
+                    setBtnLoading(true);
+                } else {
+                    if (runBtn.classList.contains('btn-loading')) {
+                        setBtnLoading(false);
+                        fetchHistory(); // refresh data on completion
+                        if (statusPollInterval) clearInterval(statusPollInterval);
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function setBtnLoading(loading) {
+            if (loading) {
+                runBtn.classList.add('btn-loading');
+                runBtn.innerHTML = '<span class="spinning">⏳</span> Simulating Backtest...';
+            } else {
+                runBtn.classList.remove('btn-loading');
+                runBtn.innerHTML = 'Run Backtest Simulation';
+            }
+        }
+
+        runBtn.addEventListener('click', async () => {
+            if (runBtn.classList.contains('btn-loading')) return;
+            
+            try {
+                setBtnLoading(true);
+                const res = await fetch('/api/run-backtest', { method: 'POST' });
+                const data = await res.json();
+                
+                if (data.success) {
+                    statusPollInterval = setInterval(checkBacktestStatus, 2000);
+                } else {
+                    alert('Could not start simulation: ' + data.error);
+                    setBtnLoading(false);
+                }
+            } catch (e) {
+                console.error(e);
+                setBtnLoading(false);
+            }
+        });
+
+        // Check status on startup in case a backtest is already running
+        checkBacktestStatus();
+        
+        // Initial load
+        fetchHistory();
+        
+        // Auto refresh table every 30s
+        setInterval(fetchHistory, 30000);
+    </script>
+</body>
+</html>

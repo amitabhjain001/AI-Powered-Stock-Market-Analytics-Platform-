@@ -50,9 +50,11 @@ function getPrevTradingDay() {
 function isValidTradingTime(symbol, isoTimeString) {
     const date = new Date(isoTimeString);
 
-    if (symbol.startsWith('NSE:') || symbol.startsWith('BSE:')) {
+    // Indian market (NSE/BSE) OR Yahoo Finance index symbols (^NSEI, ^BSESN)
+    if (symbol.startsWith('NSE:') || symbol.startsWith('BSE:') || symbol.startsWith('^')) {
         const { timeVal } = getISTTime(isoTimeString);
-        return timeVal >= 920 && timeVal <= 1230;
+        // Full session: 09:15 AM to 03:15 PM IST
+        return timeVal >= 915 && timeVal <= 1515;
     }
 
     if (symbol.startsWith('NASDAQ:') || symbol.startsWith('NYSE:')) {
@@ -242,21 +244,36 @@ function convertToHeikinAshi(candles) {
 // Anchored to today's session (resets each day)
 // ─────────────────────────────────────────────
 
-function calculateVWAP(candles) {
-    // Only use today's candles for intraday VWAP
-    const todayCandles = candles.filter(c => isTodayIST(c.time));
-    if (todayCandles.length === 0) return null;
+function calculateVWAPSeries(candles) {
+    const vwapSeries = new Array(candles.length).fill(null);
+    let currentDayStr = null;
+    let cumulativeTPV = 0;
+    let cumulativeVol = 0;
 
-    let cumulativeTPV = 0; // Typical Price × Volume
-    let cumulativeVolume = 0;
-
-    for (const c of todayCandles) {
-        const typicalPrice = (c.high + c.low + c.close) / 3;
-        cumulativeTPV += typicalPrice * c.volume;
-        cumulativeVolume += c.volume;
+    for (let i = 0; i < candles.length; i++) {
+        const c = candles[i];
+        const dayStr = getISTTime(c.time).dateStr;
+        
+        if (dayStr !== currentDayStr) {
+            currentDayStr = dayStr;
+            cumulativeTPV = 0;
+            cumulativeVol = 0;
+        }
+        
+        const tp = (c.high + c.low + c.close) / 3;
+        // Fallback to 1 if volume is missing (common for indexes like NIFTY on Yahoo Finance)
+        const vol = (c.volume && c.volume > 0) ? c.volume : 1;
+        cumulativeTPV += tp * vol;
+        cumulativeVol += vol;
+        
+        vwapSeries[i] = cumulativeVol > 0 ? (cumulativeTPV / cumulativeVol) : null;
     }
+    return vwapSeries;
+}
 
-    return cumulativeVolume > 0 ? cumulativeTPV / cumulativeVolume : null;
+function calculateVWAP(candles) {
+    const series = calculateVWAPSeries(candles);
+    return series.length > 0 ? series[series.length - 1] : null;
 }
 
 // ─────────────────────────────────────────────
@@ -422,8 +439,8 @@ function detectGapFadeShort(candles, symbol) {
     // ── Step 3: Calculate gap % ──
     const gapPercent = ((todayOpen - prevDay.close) / prevDay.close) * 100;
 
-    // Only proceed if gap is 0.8% to 4.5% up
-    if (gapPercent < 0.8 || gapPercent > 4.5) return null;
+    // Only proceed if gap is 0.4% to 4.5% up
+    if (gapPercent < 0.4 || gapPercent > 4.5) return null;
 
     // ── Step 4: Check price is fading (below today's open) ──
     const isFading = currentPrice < todayOpen;
@@ -530,8 +547,38 @@ function analyzeMarketHealth(niftyCandles) {
         return { status: 'UNKNOWN', label: 'Loading...', rsi: null, gapPercent: null, isFading: null };
     }
 
-    const prevDay = getPrevDayData(niftyCandles);
-    const todayCandles = niftyCandles.filter(c => isTodayIST(c.time));
+    // Find the latest date in the candle data (not system clock)
+    // This ensures backtesting works correctly after market hours
+    const sorted = [...niftyCandles].sort((a, b) => new Date(a.time) - new Date(b.time));
+    const latestDateStr = getISTTime(sorted[sorted.length - 1].time).dateStr;
+    
+    // Get all unique dates
+    const allDates = [...new Set(sorted.map(c => getISTTime(c.time).dateStr))].sort();
+    
+    // "Today" = the latest date in data; "prevDay" = the second-latest date
+    const latestDayCandles = sorted.filter(c => getISTTime(c.time).dateStr === latestDateStr);
+    
+    // For prevDay, find data from the day before the latest
+    let prevDay = null;
+    if (allDates.length >= 2) {
+        const prevDateStr = allDates[allDates.length - 2];
+        const prevDayCandles = sorted.filter(c => getISTTime(c.time).dateStr === prevDateStr);
+        if (prevDayCandles.length > 0) {
+            prevDay = {
+                date: prevDateStr,
+                open: prevDayCandles[0].open,
+                high: Math.max(...prevDayCandles.map(c => c.high)),
+                low: Math.min(...prevDayCandles.map(c => c.low)),
+                close: prevDayCandles[prevDayCandles.length - 1].close,
+                volume: prevDayCandles.reduce((sum, c) => sum + c.volume, 0)
+            };
+        }
+    }
+    if (!prevDay) {
+        prevDay = getPrevDayData(niftyCandles);
+    }
+
+    const todayCandles = latestDayCandles;
 
     if (todayCandles.length === 0 || !prevDay) {
         return { status: 'UNKNOWN', label: 'Waiting for data', rsi: null, gapPercent: null, isFading: null };
@@ -557,7 +604,15 @@ function analyzeMarketHealth(niftyCandles) {
     let label = 'Market Neutral';
     let shortFriendly = false;
 
-    if (gapPercent > 0.3 && isFading && (currentRSI === null || currentRSI < 55)) {
+    if (belowVWAP) {
+        status = 'BEARISH';
+        label = 'Market Bearish (Below VWAP) ↓';
+        shortFriendly = true;
+    } else if (gapPercent < -0.3) {
+        status = 'BEARISH';
+        label = 'Market Bearish ↓';
+        shortFriendly = true;
+    } else if (gapPercent > 0.3 && isFading && (currentRSI === null || currentRSI < 55)) {
         status = 'WEAKENING';
         label = 'Market Weakening ↓';
         shortFriendly = true;
@@ -565,14 +620,6 @@ function analyzeMarketHealth(niftyCandles) {
         status = 'STRONG';
         label = 'Market Strong ↑';
         shortFriendly = false;
-    } else if (gapPercent < -0.3) {
-        status = 'BEARISH';
-        label = 'Market Bearish ↓';
-        shortFriendly = true;
-    } else if (belowVWAP && isFading) {
-        status = 'WEAK';
-        label = 'Market Weak ↓';
-        shortFriendly = true;
     } else {
         status = 'NEUTRAL';
         label = 'Market Neutral →';
@@ -599,7 +646,7 @@ function analyzeMarketHealth(niftyCandles) {
 // ─────────────────────────────────────────────
 
 const BROKERAGE_PER_ROUNDTRIP = 60;
-const ASSUMED_CAPITAL = 10000;
+const ASSUMED_CAPITAL = 100000;
 
 function backtestSignals(signals, latestPrice, symbol) {
     const BROKERAGE = BROKERAGE_PER_ROUNDTRIP;
@@ -685,6 +732,67 @@ function backtestSignals(signals, latestPrice, symbol) {
 }
 
 // ─────────────────────────────────────────────
+// SUPPORT / RESISTANCE & SMART MONEY CONCEPTS
+// ─────────────────────────────────────────────
+
+function getSupportResistance(candles) {
+    if (!candles || candles.length < 10) return { support: null, resistance: null };
+    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    const todayStr = nowIST.toISOString().slice(0, 10);
+    const todayCandles = candles.filter(c => {
+        const d = new Date(new Date(c.time).getTime() + 5.5 * 60 * 60 * 1000);
+        return d.toISOString().slice(0, 10) === todayStr;
+    });
+
+    if (todayCandles.length < 3) {
+        const slice = candles.slice(-20);
+        return {
+            support: parseFloat(Math.min(...slice.map(c => c.low)).toFixed(2)),
+            resistance: parseFloat(Math.max(...slice.map(c => c.high)).toFixed(2))
+        };
+    }
+
+    const highs = todayCandles.map(c => c.high);
+    const lows = todayCandles.map(c => c.low);
+    const resistance = parseFloat(Math.max(...highs).toFixed(2));
+    const support = parseFloat(Math.min(...lows).toFixed(2));
+
+    const roundTo50 = v => Math.round(v / 50) * 50;
+    const highClusters = {};
+    highs.forEach(h => { const k = roundTo50(h); highClusters[k] = (highClusters[k] || 0) + 1; });
+    const topResistance = Object.entries(highClusters).sort((a, b) => b[1] - a[1])[0];
+
+    const lowClusters = {};
+    lows.forEach(l => { const k = roundTo50(l); lowClusters[k] = (lowClusters[k] || 0) + 1; });
+    const topSupport = Object.entries(lowClusters).sort((a, b) => b[1] - a[1])[0];
+
+    return {
+        support: topSupport ? parseFloat(topSupport[0]) : support,
+        resistance: topResistance ? parseFloat(topResistance[0]) : resistance,
+        dayHigh: resistance,
+        dayLow: support
+    };
+}
+
+function detectBOS(candles) {
+    if (!candles || candles.length < 10) return { bos: null, label: 'Waiting for data' };
+    const sorted = [...candles].sort((a, b) => new Date(a.time) - new Date(b.time));
+    const recent = sorted.slice(-15);
+    const mid = Math.floor(recent.length / 2);
+    const leftHalf = recent.slice(0, mid);
+    const rightHalf = recent.slice(mid);
+
+    const swingHigh = Math.max(...leftHalf.map(c => c.high));
+    const swingLow = Math.min(...leftHalf.map(c => c.low));
+    const currentClose = rightHalf[rightHalf.length - 1].close;
+
+    if (currentClose > swingHigh) return { bos: 'BULLISH', label: `🔼 BOS Bullish`, level: swingHigh, swingLow };
+    if (currentClose < swingLow) return { bos: 'BEARISH', label: `🔽 BOS Bearish`, level: swingLow, swingHigh };
+
+    return { bos: null, label: `Range`, swingHigh, swingLow };
+}
+
+// ─────────────────────────────────────────────
 // PARSER (unchanged)
 // ─────────────────────────────────────────────
 
@@ -724,8 +832,8 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
 
     const prices = calcCandles.map(c => c.close);
 
-    let fastIndicator = [];
-    let slowIndicator = [];
+    let fastIndicator = new Array(prices.length).fill(null);
+    let slowIndicator = new Array(prices.length).fill(null);
 
     if (strategy === 'HMA_SLOPE') {
         fastIndicator = calculateHMA(prices, period);
@@ -736,7 +844,7 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
     } else if (strategy === 'ZLEMA_CROSS') {
         fastIndicator = calculateZLEMA(prices, fastPeriod);
         slowIndicator = calculateEMA(prices, slowPeriod);
-    } else if (strategy === 'APLUS_INTRADAY' || strategy === 'GAP_FADE') {
+    } else if (strategy === 'APLUS_INTRADAY' || strategy === 'GAP_FADE' || strategy === 'SMART_MONEY') {
         fastIndicator = calculateEMA(prices, 9);
         slowIndicator = calculateEMA(prices, 21);
     }
@@ -748,7 +856,7 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
     const volSMA10 = calculateSMA(volumes, 10);
 
     // ── NEW: compute intraday extras ──
-    const vwap = calculateVWAP(candles);
+    const vwap = calculateVWAPSeries(candles);
     const atr = calculateATR(candles, 14);
     const prevDay = getPrevDayData(candles);
     const dailyRSI = getDailyRSI(candles);
@@ -776,6 +884,7 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
         candles[i].rsi = rsiValues[i] !== null ? parseFloat(rsiValues[i].toFixed(2)) : null;
         candles[i].macd = macdData.macd[i] !== null ? parseFloat(macdData.macd[i].toFixed(2)) : null;
         candles[i].macdHist = macdData.histogram[i] !== null ? parseFloat(macdData.histogram[i].toFixed(2)) : null;
+        candles[i].vwap = (vwap[i] !== null && vwap[i] !== undefined) ? parseFloat(vwap[i].toFixed(2)) : null;
         candles[i].trend = null;
         candles[i].signal = null;
 
@@ -785,14 +894,18 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
 
                 const isCrossoverBuy = fastVal > slowVal && fastIndicator[i - 1] <= slowIndicator[i - 1];
                 const isCrossoverSell = fastVal < slowVal && fastIndicator[i - 1] >= slowIndicator[i - 1];
-                const isTrendBullish = prices[i] > ema50[i] && ema50[i] > ema50[i - 1];
-                const isRsiBullish = rsiValues[i] >= 48 && rsiValues[i] <= 68;
-                const isMacdBullish = macdData.histogram[i] > 0 && macdData.histogram[i] > macdData.histogram[i - 1];
-                const isVolBullish = volumes[i] > volSMA10[i] * 1.0;
-                const isTrendBearish = prices[i] < ema50[i] && ema50[i] < ema50[i - 1];
-                const isRsiBearish = rsiValues[i] >= 32 && rsiValues[i] <= 52;
-                const isMacdBearish = macdData.histogram[i] < 0 && macdData.histogram[i] < macdData.histogram[i - 1];
-                const isVolBearish = volumes[i] > volSMA10[i] * 1.0;
+                
+                const isTrendBullish = prices[i] > ema50[i];
+                const isTrendBearish = prices[i] < ema50[i];
+                
+                const isRsiBullish = rsiValues[i] >= 40 && rsiValues[i] <= 70;
+                const isRsiBearish = rsiValues[i] >= 30 && rsiValues[i] <= 60;
+                
+                const isMacdBullish = macdData.histogram[i] > -0.02; 
+                const isMacdBearish = macdData.histogram[i] < 0.02;
+                
+                const isVolBullish = volumes[i] > volSMA10[i] * 0.8;
+                const isVolBearish = volumes[i] > volSMA10[i] * 0.8;
 
                 let trend = fastVal > slowVal ? 'GREEN' : 'RED';
                 candles[i].trend = trend;
@@ -814,6 +927,201 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
                 }
             } else if (fastVal !== null && slowVal !== null) {
                 candles[i].trend = fastVal > slowVal ? 'GREEN' : 'RED';
+            }
+        } else if (strategy === 'SMART_MONEY') {
+            if (i > 25) {
+                const currPrice = prices[i];
+                const rsi = rsiValues[i];
+                const currVwap = vwap[i];
+                const currEma50 = ema50[i];
+                const currVol = volumes[i];
+                const avgVol = volSMA10[i];
+                
+                // Fast/slow EMAs for momentum
+                const ema9 = fastIndicator[i];   // EMA9
+                const ema21 = slowIndicator[i];  // EMA21
+                const prevEma9 = i > 0 ? fastIndicator[i - 1] : null;
+                const prevEma21 = i > 0 ? slowIndicator[i - 1] : null;
+                
+                if (currEma50 === null || currVwap === null || rsi === null || ema9 === null || ema21 === null) {
+                    candles[i].trend = null;
+                } else {
+                    // Check Nifty trend if available
+                    let currentMarketHealth = null;
+                    if (options.niftyCandles) {
+                        const targetTime = new Date(candles[i].time).getTime();
+                        const niftySlice = options.niftyCandles.filter(nc => new Date(nc.time).getTime() <= targetTime);
+                        currentMarketHealth = analyzeMarketHealth(niftySlice);
+                    } else if (options.marketHealth) {
+                        currentMarketHealth = options.marketHealth;
+                    }
+
+                    const isMarketBearish = currentMarketHealth ? currentMarketHealth.shortFriendly : false;
+                    const isMarketBullish = currentMarketHealth ? currentMarketHealth.status === 'STRONG' : false;
+
+                    // MACRO TREND via VWAP + EMA50
+                    const isUptrend = currPrice > currVwap && currPrice > currEma50;
+                    const isDowntrend = currPrice < currVwap && currPrice < currEma50;
+                    
+                    // EMA crossover momentum
+                    const bullCross = prevEma9 !== null && prevEma21 !== null && prevEma9 <= prevEma21 && ema9 > ema21;
+                    const bearCross = prevEma9 !== null && prevEma21 !== null && prevEma9 >= prevEma21 && ema9 < ema21;
+                    
+                    // VWAP reclaim/rejection (price crossing VWAP)
+                    const prevPrice = i > 0 ? prices[i - 1] : null;
+                    const vwapReclaim = prevPrice !== null && currVwap !== null && prevPrice < currVwap && currPrice >= currVwap; // bullish reclaim
+                    const vwapRejection = prevPrice !== null && currVwap !== null && prevPrice > currVwap && currPrice <= currVwap; // bearish rejection
+                    
+                    // RSI momentum confirmation (relaxed slightly for better entries)
+                    const rsiBullish = rsi >= 40 && rsi <= 75;
+                    const rsiBearish = rsi <= 60 && rsi >= 25;
+                    
+                    // Volume surge (bypass volume completely for indexes because data is unreliable)
+                    const isIndex = symbol.startsWith('^') || symbol.includes('NIFTY') || symbol.includes('SENSEX');
+                    const volSurge = isIndex ? true : (avgVol === 0 ? true : currVol >= avgVol * 1.0);
+                    
+                    const isWithinTradingHours = isValidTradingTime(symbol, candles[i].time);
+                    
+                    // Track open trade state
+                    const lastSignal = signals.length > 0 ? signals[signals.length - 1] : null;
+                    const isInLong = lastSignal && lastSignal.type === 'ENTRY_LONG';
+                    const isInShort = lastSignal && lastSignal.type === 'ENTRY_SHORT';
+                    const isInTrade = isInLong || isInShort;
+                    
+                    if (!isInTrade && isWithinTradingHours) {
+                        // ── TREND DIRECTION ──
+                        // EMA9 slope: trending up or down?
+                        const ema9Slope = (i >= 2 && fastIndicator[i-2] !== null)
+                            ? ema9 - fastIndicator[i-2]
+                            : 0;
+                        const bullishMomentum = ema9 > ema21 && ema9Slope > 0;    // EMA9 above EMA21 and rising
+                        const bearishMomentum = ema9 < ema21 && ema9Slope < 0;    // EMA9 below EMA21 and falling
+
+                        // ── PRICE POSITION ──
+                        const aboveVWAP = currPrice > currVwap;
+                        const belowVWAP = currPrice < currVwap;
+                        const aboveEMA50 = currPrice > currEma50;
+                        const belowEMA50 = currPrice < currEma50;
+                        
+                        // ── CROSSOVER: Primary entry on new trend ──
+                        const bullCross = prevEma9 !== null && prevEma21 !== null && prevEma9 <= prevEma21 && ema9 > ema21;
+                        const bearCross = prevEma9 !== null && prevEma21 !== null && prevEma9 >= prevEma21 && ema9 < ema21;
+                        
+                        // ── PULLBACK TO EMA9: High accuracy re-entry in trending market ──
+                        // Price dipped near EMA9 then resumed in trend direction
+                        const prevPrice = i > 0 ? prices[i - 1] : null;
+                        const prevLow  = i > 0 ? candles[i-1].low : null;
+                        const prevHigh = i > 0 ? candles[i-1].high : null;
+                        const touchedEMA9Long  = prevLow  !== null && prevLow  <= ema9 * 1.002 && currPrice > ema9;  // dipped to EMA9, recovered
+                        const touchedEMA9Short = prevHigh !== null && prevHigh >= ema9 * 0.998 && currPrice < ema9;  // bounced to EMA9, rejected
+                        
+                        // ── VWAP reclaim/rejection ──
+                        const vwapReclaim   = prevPrice !== null && prevPrice < currVwap   && currPrice >= currVwap;
+                        const vwapRejection = prevPrice !== null && prevPrice > currVwap   && currPrice <= currVwap;
+                        
+                        // ── RSI CONFIRMATION ──
+                        const rsiBullish = rsi >= 40 && rsi <= 70;
+                        const rsiBearish = rsi <= 60 && rsi >= 30;
+                        const rsiOverbought = rsi > 75;   // don't enter long
+                        const rsiOversold   = rsi < 25;   // don't enter short
+                        
+                        // ── SETUPS ──
+                        // Setup A: Fresh crossover with trend confirmation
+                        const longA  = bullCross  && aboveVWAP && rsiBullish && !rsiOverbought;
+                        const shortA = bearCross  && belowVWAP && rsiBearish && !rsiOversold;
+                        
+                        // Setup B: VWAP reclaim/rejection with momentum
+                        const longB  = vwapReclaim   && bullishMomentum && aboveEMA50 && rsiBullish;
+                        const shortB = vwapRejection && bearishMomentum && belowEMA50 && rsiBearish;
+                        
+                        // Setup C: Pullback to EMA9 and resume (highest accuracy)
+                        const longC  = touchedEMA9Long  && bullishMomentum && aboveVWAP && rsiBullish && !rsiOverbought;
+                        const shortC = touchedEMA9Short && bearishMomentum && belowVWAP && rsiBearish && !rsiOversold;
+                        
+                        // For indexes, we are the market so skip market health bias
+                        const isIndex = symbol.startsWith('^') || symbol.includes('NIFTY') || symbol.includes('SENSEX');
+                        const mktBearish = isIndex ? false : (currentMarketHealth ? currentMarketHealth.shortFriendly : false);
+                        const mktBullish = isIndex ? false : (currentMarketHealth ? currentMarketHealth.status === 'STRONG' : false);
+                        
+                        // ── MACRO TREND FILTER ──
+                        // Only take trades when the EMA50 is actually sloping, avoiding flat choppy markets
+                        const ema50Slope = (i >= 5 && ema50[i-5] !== null) ? currEma50 - ema50[i-5] : 0;
+                        const isMacroTrendingUp = ema50Slope > 0;
+                        const isMacroTrendingDown = ema50Slope < 0;
+                        
+                        const buySignal  = (longA  || longB  || longC)  && !mktBearish && isMacroTrendingUp;
+                        const sellSignal = (shortA || shortB || shortC) && !mktBullish && isMacroTrendingDown;
+                        
+                        if (buySignal && !sellSignal) {
+                            candles[i].signal = 'ENTRY_LONG';
+                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'ENTRY_LONG', entryPrice: currPrice });
+                            candles[i].trend = 'GREEN';
+                        } else if (sellSignal) {
+                            candles[i].signal = 'ENTRY_SHORT';
+                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'ENTRY_SHORT', entryPrice: currPrice });
+                            candles[i].trend = 'RED';
+                        } else {
+                            // PRE-ALERT: price approaching key level
+                            if (i === candles.length - 1) {
+                                const nearVWAP = Math.abs(currPrice - currVwap) / currVwap < 0.002;
+                                if (bullishMomentum && nearVWAP && rsi < 55) {
+                                    candles[i].signal = 'PRE_ALERT_LONG';
+                                } else if (bearishMomentum && nearVWAP && rsi > 45) {
+                                    candles[i].signal = 'PRE_ALERT_SHORT';
+                                }
+                            }
+                            candles[i].trend = bullishMomentum ? 'GREEN' : (bearishMomentum ? 'RED' : null);
+                        }
+                    } else if (isInTrade) {
+                        // EXIT: Trend-following approach — ride the move, don't cap at tiny TP
+                        const entryPrice = lastSignal.entryPrice;
+                        const profitPct = isInLong
+                            ? (currPrice - entryPrice) / entryPrice
+                            : (entryPrice - currPrice) / entryPrice;
+                        
+                        // Track peak profit for trailing stop
+                        if (!lastSignal.peakProfitPct || profitPct > lastSignal.peakProfitPct) {
+                            lastSignal.peakProfitPct = profitPct;
+                        }
+                        const peakProfit = lastSignal.peakProfitPct || 0;
+                        
+                        const HARD_SL = -0.004;          // 0.4% hard stop loss (tight — cut losers fast)
+                        const TRAIL_FROM_PEAK = 0.005;   // Trail 0.5% from peak once in profit
+                        // Trailing stop only activates after 0.8% profit — let the trade breathe first
+                        const trailSL = peakProfit > 0.008 ? peakProfit - TRAIL_FROM_PEAK : HARD_SL;
+                        
+                        // Structural reversal: EMA cross against us OR price breaks VWAP+EMA50 together
+                        const emaCrossedAgainstLong = isInLong && ema9 < ema21 && prevEma9 >= prevEma21;
+                        const emaCrossedAgainstShort = isInShort && ema9 > ema21 && prevEma9 <= prevEma21;
+                        const trendReversedLong = isInLong && currPrice < currVwap && currPrice < currEma50;
+                        const trendReversedShort = isInShort && currPrice > currVwap && currPrice > currEma50;
+                        
+                        // End of day force exit (3:15 PM IST)
+                        const { timeVal } = getISTTime(candles[i].time);
+                        const isEndOfDay = timeVal >= 1515;
+                        
+                        const longExit = profitPct <= HARD_SL || profitPct <= trailSL
+                            || trendReversedLong || isEndOfDay;
+                        const shortExit = profitPct <= HARD_SL || profitPct <= trailSL
+                            || trendReversedShort || isEndOfDay;
+                        
+                        if (isInLong && longExit) {
+                            candles[i].signal = 'EXIT_LONG';
+                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'EXIT_LONG', entryPrice });
+                            candles[i].trend = 'RED';
+                        } else if (isInShort && shortExit) {
+                            candles[i].signal = 'EXIT_SHORT';
+                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'EXIT_SHORT', entryPrice });
+                            candles[i].trend = 'GREEN';
+                        } else {
+                            candles[i].trend = isInLong ? 'GREEN' : 'RED';
+                        }
+                    } else {
+                        const isUptrend2 = currPrice > currVwap && currPrice > currEma50;
+                        const isDowntrend2 = currPrice < currVwap && currPrice < currEma50;
+                        candles[i].trend = isUptrend2 ? 'GREEN' : (isDowntrend2 ? 'RED' : null);
+                    }
+                }
             }
         } else if (strategy === 'GAP_FADE') {
             // For GAP_FADE strategy, trend is just EMA direction
@@ -874,7 +1182,7 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
         candles: displayCandles,
         // ── intraday extras (new) ──
         intradayData: {
-            vwap: vwap ? parseFloat(vwap.toFixed(2)) : null,
+            vwap: vwap && vwap.length > 0 && vwap[vwap.length - 1] !== null ? parseFloat(vwap[vwap.length - 1].toFixed(2)) : null,
             atr: atr,
             gapPercent,
             todayOpen: todayOpen ? parseFloat(todayOpen.toFixed(2)) : null,
@@ -985,13 +1293,15 @@ async function streamSymbol(symbol, interval = '1D', options = {}, onUpdate) {
 module.exports = {
     streamSymbol,
     processCandlesAndGetState,
-    // ── new exports ──
     detectGapFadeShort,
     analyzeMarketHealth,
+    calculateVWAPSeries,
     calculateVWAP,
     calculateATR,
     getPrevDayData,
     getDailyRSI,
     getConsecutiveRedDays,
-    parseTradingViewWS
+    parseTradingViewWS,
+    getSupportResistance,
+    detectBOS
 };

@@ -499,6 +499,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 speakAlert(`Exit alert! Close your short position on ${assetName}.`);
                 lastSpokenSignalTime = latest.time;
             }
+        } else if (latest.signal === 'PRE_ALERT_LONG') {
+            signalAlert.classList.add('buy-alert');
+            alertText.textContent = '⏳ PRE-ALERT LONG ⏳';
+            alertSubtext.textContent = `Price is approaching Support zone. Get ready for a Long entry on ${assetName}.`;
+
+            if (lastSpokenSignalTime !== latest.time + '_preL') {
+                speakAlert(`10 Second Warning! Approaching Support on ${assetName}. Get ready for Long.`);
+                lastSpokenSignalTime = latest.time + '_preL';
+            }
+        } else if (latest.signal === 'PRE_ALERT_SHORT') {
+            signalAlert.classList.add('sell-alert');
+            alertText.textContent = '⏳ PRE-ALERT SHORT ⏳';
+            alertSubtext.textContent = `Price is approaching Resistance zone. Get ready for a Short entry on ${assetName}.`;
+
+            if (lastSpokenSignalTime !== latest.time + '_preS') {
+                speakAlert(`10 Second Warning! Approaching Resistance on ${assetName}. Get ready for Short.`);
+                lastSpokenSignalTime = latest.time + '_preS';
+            }
         } else {
             alertText.textContent = 'Tracking Trend...';
             alertSubtext.textContent = `Currently in a ${latest.trend === 'GREEN' ? 'Bullish' : 'Bearish'} trend. Waiting for next reversal.`;
@@ -597,7 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const typeTd = document.createElement('td');
             typeTd.textContent = sig.type.replace('_', ' ');
-            const isLongish = sig.type === 'ENTRY_LONG' || sig.type === 'EXIT_SHORT' || sig.type === 'BUY';
+            const isLongish = sig.type === 'ENTRY_LONG' || sig.type === 'EXIT_SHORT' || sig.type === 'BUY' || sig.type === 'PRE_ALERT_LONG';
             typeTd.className = isLongish ? 'buy-text' : 'sell-text';
 
             tr.appendChild(timeTd);
@@ -788,34 +806,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Draw Signals on the chart
         candles.forEach((c, i) => {
-            if (c.signal === 'ENTRY_LONG' || c.signal === 'EXIT_SHORT' || c.signal === 'BUY') {
+            if (c.signal === 'ENTRY_LONG' || c.signal === 'EXIT_SHORT' || c.signal === 'BUY' || c.signal === 'PRE_ALERT_LONG') {
                 const x = getX(i);
                 const y = getY(c.low) + 14;
 
-                ctx.fillStyle = c.signal === 'EXIT_SHORT' ? '#94a3b8' : '#10b981';
+                ctx.fillStyle = c.signal === 'EXIT_SHORT' ? '#94a3b8' : (c.signal === 'PRE_ALERT_LONG' ? '#f59e0b' : '#10b981');
                 ctx.beginPath();
                 ctx.moveTo(x, y - 6);
                 ctx.lineTo(x - 5, y + 2);
                 ctx.lineTo(x + 5, y + 2);
                 ctx.fill();
 
-                ctx.font = 'bold 8px Inter';
+                ctx.font = '10px Inter';
                 ctx.textAlign = 'center';
-                ctx.fillText(c.signal.replace('_', ' '), x, y + 10);
-            } else if (c.signal === 'ENTRY_SHORT' || c.signal === 'EXIT_LONG' || c.signal === 'SELL') {
+                ctx.fillText(c.signal.replace('_', ' '), x, y + 14);
+            } else if (c.signal === 'ENTRY_SHORT' || c.signal === 'EXIT_LONG' || c.signal === 'SELL' || c.signal === 'PRE_ALERT_SHORT') {
                 const x = getX(i);
                 const y = getY(c.high) - 14;
 
-                ctx.fillStyle = c.signal === 'EXIT_LONG' ? '#94a3b8' : '#ef4444';
+                ctx.fillStyle = c.signal === 'EXIT_LONG' ? '#94a3b8' : (c.signal === 'PRE_ALERT_SHORT' ? '#f59e0b' : '#ef4444');
                 ctx.beginPath();
                 ctx.moveTo(x, y + 6);
                 ctx.lineTo(x - 5, y - 2);
                 ctx.lineTo(x + 5, y - 2);
                 ctx.fill();
 
-                ctx.font = 'bold 8px Inter';
+                ctx.font = '10px Inter';
                 ctx.textAlign = 'center';
-                ctx.fillText(c.signal.replace('_', ' '), x, y - 7);
+                ctx.fillText(c.signal.replace('_', ' '), x, y - 10);
             }
         });
 

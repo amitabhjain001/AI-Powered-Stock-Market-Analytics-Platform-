@@ -7,8 +7,11 @@ const {
     getPrevDayData,
     getDailyRSI,
     getConsecutiveRedDays,
-    parseTradingViewWS
+    parseTradingViewWS,
+    getSupportResistance,
+    detectBOS
 } = require('./scanner');
+const { appendSignalToHistory } = require('./storage');
 
 // ─────────────────────────────────────────────
 // STOCK LISTS
@@ -19,7 +22,12 @@ const {
 const NIFTY_SYMBOL = { symbol: 'NSE:NIFTY', name: 'NIFTY 50 (Market Health)' };
 
 const STOCK_LISTS = {
-    // 12 most liquid Indian stocks for gap fade strategy
+    // Pure index tracking (for the focused index signals)
+    INDIAN_INDEXES: [
+        { symbol: 'NSE:NIFTY', name: 'NIFTY 50' },
+        { symbol: 'NSE:BANKNIFTY', name: 'NIFTY BANK' },
+    ],
+    // 12 most liquid Indian stocks for intraday swing setups
     INDIAN_STOCKS: [
         { symbol: 'NSE:RELIANCE', name: 'Reliance Industries' },
         { symbol: 'NSE:HDFCBANK', name: 'HDFC Bank' },
@@ -33,30 +41,6 @@ const STOCK_LISTS = {
         { symbol: 'NSE:TATAMOTORS', name: 'Tata Motors' },
         { symbol: 'NSE:LT', name: 'Larsen & Toubro' },
         { symbol: 'NSE:KOTAKBANK', name: 'Kotak Mahindra Bank' }
-    ],
-    US_STOCKS: [
-        { symbol: 'NASDAQ:AAPL', name: 'Apple Inc.' },
-        { symbol: 'NASDAQ:MSFT', name: 'Microsoft Corp.' },
-        { symbol: 'NASDAQ:NVDA', name: 'NVIDIA Corp.' },
-        { symbol: 'NASDAQ:AMZN', name: 'Amazon.com Inc.' },
-        { symbol: 'NASDAQ:META', name: 'Meta Platforms' },
-        { symbol: 'NASDAQ:GOOGL', name: 'Alphabet Inc.' },
-        { symbol: 'NASDAQ:TSLA', name: 'Tesla Inc.' },
-        { symbol: 'NASDAQ:AMD', name: 'Advanced Micro Devices' },
-        { symbol: 'NASDAQ:NFLX', name: 'Netflix Inc.' },
-        { symbol: 'NYSE:JPM', name: 'JPMorgan Chase' }
-    ],
-    CRYPTO: [
-        { symbol: 'BINANCE:BTCUSDT', name: 'Bitcoin / USDT' },
-        { symbol: 'BINANCE:ETHUSDT', name: 'Ethereum / USDT' },
-        { symbol: 'BINANCE:SOLUSDT', name: 'Solana / USDT' },
-        { symbol: 'BINANCE:ADAUSDT', name: 'Cardano / USDT' },
-        { symbol: 'BINANCE:XRPUSDT', name: 'XRP / USDT' },
-        { symbol: 'BINANCE:DOGEUSDT', name: 'Dogecoin / USDT' },
-        { symbol: 'BINANCE:DOTUSDT', name: 'Polkadot / USDT' },
-        { symbol: 'BINANCE:AVAXUSDT', name: 'Avalanche / USDT' },
-        { symbol: 'BINANCE:LINKUSDT', name: 'Chainlink / USDT' },
-        { symbol: 'BINANCE:MATICUSDT', name: 'Polygon / USDT' }
     ]
 };
 
@@ -148,88 +132,7 @@ function interpretOITrend(oiHistory) {
     return { trend: 'UNKNOWN', label: 'Insufficient OI data', bullish: null };
 }
 
-// ─────────────────────────────────────────────
-// SUPPORT / RESISTANCE from NIFTY candles
-// Simple: recent pivot highs and lows
-// ─────────────────────────────────────────────
-
-function getSupportResistance(candles) {
-    if (!candles || candles.length < 10) return { support: null, resistance: null };
-
-    // Use only today's candles for intraday S/R
-    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-    const todayStr = nowIST.toISOString().slice(0, 10);
-    const todayCandles = candles.filter(c => {
-        const d = new Date(new Date(c.time).getTime() + 5.5 * 60 * 60 * 1000);
-        return d.toISOString().slice(0, 10) === todayStr;
-    });
-
-    if (todayCandles.length < 3) {
-        // Fall back to last 20 candles across days
-        const slice = candles.slice(-20);
-        return {
-            support: parseFloat(Math.min(...slice.map(c => c.low)).toFixed(2)),
-            resistance: parseFloat(Math.max(...slice.map(c => c.high)).toFixed(2))
-        };
-    }
-
-    const highs = todayCandles.map(c => c.high);
-    const lows = todayCandles.map(c => c.low);
-
-    // Pivot-style: find local high/low clusters
-    const resistance = parseFloat(Math.max(...highs).toFixed(2));
-    const support = parseFloat(Math.min(...lows).toFixed(2));
-
-    // Second-level: strongest intraday cluster (most touches)
-    // Simple approach — round to nearest 50 and count touches
-    const roundTo50 = v => Math.round(v / 50) * 50;
-    const highClusters = {};
-    highs.forEach(h => { const k = roundTo50(h); highClusters[k] = (highClusters[k] || 0) + 1; });
-    const topResistance = Object.entries(highClusters).sort((a, b) => b[1] - a[1])[0];
-
-    const lowClusters = {};
-    lows.forEach(l => { const k = roundTo50(l); lowClusters[k] = (lowClusters[k] || 0) + 1; });
-    const topSupport = Object.entries(lowClusters).sort((a, b) => b[1] - a[1])[0];
-
-    return {
-        support: topSupport ? parseFloat(topSupport[0]) : support,
-        resistance: topResistance ? parseFloat(topResistance[0]) : resistance,
-        dayHigh: resistance,
-        dayLow: support
-    };
-}
-
-// ─────────────────────────────────────────────
-// BREAK OF STRUCTURE DETECTION
-// BOS = price closes beyond previous swing H/L
-// ─────────────────────────────────────────────
-
-function detectBOS(candles) {
-    if (!candles || candles.length < 10) return { bos: null, label: 'Waiting for data' };
-
-    const sorted = [...candles].sort((a, b) => new Date(a.time) - new Date(b.time));
-    const recent = sorted.slice(-15); // last 15 candles
-
-    // Swing high = highest high in first half
-    // BOS bearish = current close breaks below swing low
-    const mid = Math.floor(recent.length / 2);
-    const leftHalf = recent.slice(0, mid);
-    const rightHalf = recent.slice(mid);
-
-    const swingHigh = Math.max(...leftHalf.map(c => c.high));
-    const swingLow = Math.min(...leftHalf.map(c => c.low));
-    const currentClose = rightHalf[rightHalf.length - 1].close;
-    const currentHigh = rightHalf[rightHalf.length - 1].high;
-
-    if (currentClose > swingHigh) {
-        return { bos: 'BULLISH', label: `🔼 BOS Bullish — broke above ₹${swingHigh.toFixed(0)}`, level: swingHigh };
-    }
-    if (currentClose < swingLow) {
-        return { bos: 'BEARISH', label: `🔽 BOS Bearish — broke below ₹${swingLow.toFixed(0)}`, level: swingLow };
-    }
-
-    return { bos: null, label: `Range: ₹${swingLow.toFixed(0)} – ₹${swingHigh.toFixed(0)}`, swingHigh, swingLow };
-}
+// Functions getSupportResistance and detectBOS moved to scanner.js
 
 // ─────────────────────────────────────────────
 // FULL NIFTY ANALYSIS — called by /api/nifty-analysis
@@ -565,8 +468,8 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                     candlesCache[stock.symbol] = [...candles];
                     scannerEmitter.emit('update', { symbol: stock.symbol, candles: [...candles] });
 
-                    // ── Process with GAP_FADE strategy ──
-                    const options = { strategy: 'GAP_FADE' };
+                    // ── Process with SMART_MONEY strategy ──
+                    const options = { strategy: 'SMART_MONEY' };
                     const state = processCandlesAndGetState(candles, stock.symbol, currentInterval, options);
 
                     if (!state || !state.latest) return;
@@ -671,6 +574,9 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                                     // Persist to daily ledger
                                     dailyLedger.unshift(alertObj);
                                     if (dailyLedger.length > 1000) dailyLedger.pop();
+                                    
+                                    // Persist to JSON file
+                                    appendSignalToHistory(alertObj);
 
                                     // Store as last signal on this stock
                                     cached.lastSignal = alertObj;
@@ -681,6 +587,50 @@ async function startIntradayScanner(assetClass, interval, onAlert, onStatusUpdat
                                 }
                             } else {
                                 console.log(`[SIGNAL BLOCKED] ${stock.symbol} — market is STRONG, skipping short signal`);
+                            }
+                        }
+                    }
+
+                    // ── SMART_MONEY Signal Detection ──
+                    const smartSignal = state.latest.signal;
+                    if (smartSignal && (smartSignal.startsWith('ENTRY_') || smartSignal.startsWith('EXIT_') || smartSignal.startsWith('PRE_ALERT_'))) {
+                        const signalId = `${stock.symbol}_smart_${state.latest.time}_${smartSignal}`;
+
+                        if (signalId !== cached.lastProcessedSignalId) {
+                            cached.lastProcessedSignalId = signalId;
+
+                            const winRate = state.stats?.winRate || 50;
+                            let prob = 'HIGH';
+                            if (winRate < 40) prob = 'LOW';
+                            else if (winRate < 55) prob = 'MEDIUM';
+
+                            const alertObj = {
+                                id: signalId,
+                                symbol: stock.symbol,
+                                name: stock.name,
+                                type: smartSignal,
+                                price: state.latest.price,
+                                time: new Date().toISOString(),
+                                winRate: winRate,
+                                prob: prob,
+                                interval: currentInterval,
+                                strategy: 'SMART_MONEY'
+                            };
+
+                            if (!activeAlerts.some(a => a.id === alertObj.id)) {
+                                activeAlerts.unshift(alertObj);
+                                if (activeAlerts.length > 50) activeAlerts.pop();
+
+                                dailyLedger.unshift(alertObj);
+                                if (dailyLedger.length > 1000) dailyLedger.pop();
+                                
+                                appendSignalToHistory(alertObj);
+
+                                cached.lastSignal = alertObj;
+
+                                if (onAlert) onAlert(alertObj);
+
+                                console.log(`[SIGNAL] SMART_MONEY: ${stock.symbol} | ${smartSignal} @ ${state.latest.price} | Win Rate: ${winRate}%`);
                             }
                         }
                     }

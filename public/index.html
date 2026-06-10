@@ -41,6 +41,7 @@
             <button id="tabSingle" class="tab-btn active">Single Asset Analysis</button>
             <button id="tabMulti" class="tab-btn">Intraday Multi-Stock Monitor</button>
             <button id="tabLedger" class="tab-btn">Daily Performance Ledger</button>
+            <a href="/history.html" class="tab-btn" style="text-decoration:none; display:inline-block;">Signal History & Backtest</a>
         </div>
 
         <!-- Single Stock View Container -->
@@ -64,9 +65,6 @@
                                 <option value="NSE:INFY">Infosys</option>
                                 <option value="NSE:SBIN">State Bank of India</option>
                             </optgroup>
-                            <optgroup label="Crypto">
-                                <option value="BITSTAMP:BTCUSD">Bitcoin (BTC/USD)</option>
-                            </optgroup>
                         </select>
                     </div>
 
@@ -84,13 +82,20 @@
                     <div class="control-group">
                         <label for="strategySelect">Strategy</label>
                         <select id="strategySelect">
-                            <option value="APLUS_INTRADAY" selected>A+ Intraday Setup</option>
-                            <option value="GAP_FADE">Gap & Fade Short</option>
+                            <option value="SMART_MONEY" selected>Smart Money Concepts (S&R + BOS)</option>
+                            <option value="APLUS_INTRADAY">A+ Intraday Setup (EMA Cross)</option>
                             <option value="HMA_SLOPE">HMA Slope Reversal</option>
                             <option value="HMA_CROSS">HMA Fast/Slow Cross</option>
                             <option value="ZLEMA_CROSS">ZLEMA Crossover</option>
                         </select>
                     </div>
+                </div>
+
+                <!-- Timeframe Visual Guide -->
+                <div class="timeframe-guide">
+                    <span class="tf-badge recommended"><span class="tf-icon">⭐</span> Smart Money: 5m or 15m</span>
+                    <span class="tf-badge"><span class="tf-icon">⚡</span> EMA Scalps: 1m</span>
+                    <span class="tf-badge"><span class="tf-icon">🌅</span> Gap Fade: 5m (Open Only)</span>
                 </div>
 
                 <div class="control-row secondary-controls">
@@ -341,9 +346,8 @@
                     <div class="control-group">
                         <label for="multiAssetSelect">Intraday Scanner Asset Group</label>
                         <select id="multiAssetSelect">
-                            <option value="INDIAN_STOCKS" selected>Top Indian Large Caps</option>
-                            <option value="US_STOCKS">Top US Large Caps</option>
-                            <option value="CRYPTO">Top Cryptocurrencies</option>
+                            <option value="INDIAN_STOCKS" selected>🏢 Indian Large Cap Stocks</option>
+                            <option value="INDIAN_INDEXES">📈 Indian Indexes (NIFTY & BANKNIFTY)</option>
                         </select>
                     </div>
                     <div class="control-group">

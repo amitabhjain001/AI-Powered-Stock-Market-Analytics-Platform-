@@ -12,6 +12,7 @@ const {
     scannerEmitter,
     candlesCache
 } = require('./intradayScanner');
+const { getSignalHistory } = require('./storage');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -179,6 +180,18 @@ app.get('/api/market-health', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
+// SIGNALS HISTORY — persisted signals
+// ─────────────────────────────────────────────
+
+app.get('/api/signals-history', (req, res) => {
+    try {
+        res.json({ success: true, history: getSignalHistory() });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// ─────────────────────────────────────────────
 // NIFTY FULL ANALYSIS — OI, S/R, BOS
 // Polled by frontend every 5s for NIFTY panel
 // ─────────────────────────────────────────────
@@ -208,6 +221,34 @@ app.post('/api/check-exit', (req, res) => {
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
+});
+
+// ─────────────────────────────────────────────
+// RUN BACKTEST FROM UI
+// ─────────────────────────────────────────────
+
+let isBacktesting = false;
+
+app.post('/api/run-backtest', (req, res) => {
+    if (isBacktesting) {
+        return res.status(400).json({ success: false, error: 'Backtest is already running' });
+    }
+    isBacktesting = true;
+    console.log('[Backtest] Triggered via web UI');
+    const { exec } = require('child_process');
+    exec('node scripts/run_historical_backtest.js', (error, stdout, stderr) => {
+        isBacktesting = false;
+        if (error) {
+            console.error(`[Backtest] Error during UI-triggered run: ${error.message}`);
+        } else {
+            console.log('[Backtest] UI-triggered run finished successfully');
+        }
+    });
+    res.json({ success: true, message: 'Backtest started in background' });
+});
+
+app.get('/api/backtest-status', (req, res) => {
+    res.json({ success: true, running: isBacktesting });
 });
 
 // ─────────────────────────────────────────────
