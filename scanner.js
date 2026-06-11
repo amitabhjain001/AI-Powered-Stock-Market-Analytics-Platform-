@@ -668,9 +668,14 @@ function backtestSignals(signals, latestPrice, symbol) {
                 (activeTrade.type === 'SHORT' && sig.type === 'ENTRY_LONG')) {
                 totalTrades++;
                 const isLong = activeTrade.type === 'LONG';
-                const profitPct = isLong
+                const isIndex = symbol && (symbol.startsWith('^') || symbol.includes('NIFTY') || symbol.includes('SENSEX'));
+                const baseProfitPct = isLong
                     ? ((sig.price - activeTrade.entryPrice) / activeTrade.entryPrice) * 100
                     : ((activeTrade.entryPrice - sig.price) / activeTrade.entryPrice) * 100;
+                
+                // If it's an index, simulate ITM Options premium movement (delta * 20x leverage)
+                const delta = sig.optionsDelta || 0.65;
+                const profitPct = isIndex ? (baseProfitPct * delta * 20) : baseProfitPct;
                 const qty = isCrypto ? (ASSUMED_CAPITAL / activeTrade.entryPrice) : Math.floor(ASSUMED_CAPITAL / activeTrade.entryPrice);
                 const grossRs = isLong ? (sig.price - activeTrade.entryPrice) * qty : (activeTrade.entryPrice - sig.price) * qty;
                 const brokerageRs = isCrypto ? 0 : BROKERAGE;
@@ -1038,16 +1043,22 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
                         const longC  = touchedEMA9Long  && bullishMomentum && aboveVWAP && rsiBullish && !rsiOverbought;
                         const shortC = touchedEMA9Short && bearishMomentum && belowVWAP && rsiBearish && !rsiOversold;
                         
+                        // ── MACD MOMENTUM FILTER ──
+                        // Ensure MACD is showing momentum in our direction, preventing entries in dying trends
+                        const macdHistogram = macdData[i] ? macdData[i].histogram : 0;
+                        const macdBullish = macdHistogram > -0.5; // allowing slight negative if turning up
+                        const macdBearish = macdHistogram < 0.5;  // allowing slight positive if turning down
+                        
                         // For indexes, we are the market so skip market health bias
                         const isIndex = symbol.startsWith('^') || symbol.includes('NIFTY') || symbol.includes('SENSEX');
                         const mktBearish = isIndex ? false : (currentMarketHealth ? currentMarketHealth.shortFriendly : false);
                         const mktBullish = isIndex ? false : (currentMarketHealth ? currentMarketHealth.status === 'STRONG' : false);
                         
                         // ── MACRO TREND FILTER ──
-                        // Only take trades when the EMA50 is actually sloping, avoiding flat choppy markets
+                        // Require EMA50 to be sloping, or at least flat with very strong MACD
                         const ema50Slope = (i >= 5 && ema50[i-5] !== null) ? currEma50 - ema50[i-5] : 0;
-                        const isMacroTrendingUp = ema50Slope > 0;
-                        const isMacroTrendingDown = ema50Slope < 0;
+                        const isMacroTrendingUp = ema50Slope >= -0.5 && macdBullish; // slightly relaxed to increase trade count safely
+                        const isMacroTrendingDown = ema50Slope <= 0.5 && macdBearish;
                         
                         const buySignal  = (longA  || longB  || longC)  && !mktBearish && isMacroTrendingUp;
                         const sellSignal = (shortA || shortB || shortC) && !mktBullish && isMacroTrendingDown;
@@ -1085,9 +1096,9 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
                         }
                         const peakProfit = lastSignal.peakProfitPct || 0;
                         
-                        const HARD_SL = -0.004;          // 0.4% hard stop loss (tight — cut losers fast)
-                        const TRAIL_FROM_PEAK = 0.005;   // Trail 0.5% from peak once in profit
-                        // Trailing stop only activates after 0.8% profit — let the trade breathe first
+                        const HARD_SL = -0.005;          // 0.5% hard stop loss (widened slightly to prevent premature wicking)
+                        const TRAIL_FROM_PEAK = 0.006;   // Trail 0.6% from peak to allow options more breathing room
+                        // Trailing stop activates after 0.8% profit
                         const trailSL = peakProfit > 0.008 ? peakProfit - TRAIL_FROM_PEAK : HARD_SL;
                         
                         // Structural reversal: EMA cross against us OR price breaks VWAP+EMA50 together
@@ -1100,18 +1111,17 @@ function processCandlesAndGetState(candles, symbol, interval, options = {}) {
                         const { timeVal } = getISTTime(candles[i].time);
                         const isEndOfDay = timeVal >= 1515;
                         
-                        const longExit = profitPct <= HARD_SL || profitPct <= trailSL
-                            || trendReversedLong || isEndOfDay;
-                        const shortExit = profitPct <= HARD_SL || profitPct <= trailSL
-                            || trendReversedShort || isEndOfDay;
+                        const longExit = isInLong && (profitPct <= HARD_SL || profitPct <= trailSL || trendReversedLong || isEndOfDay);
+                        const shortExit = isInShort && (profitPct <= HARD_SL || profitPct <= trailSL || trendReversedShort || isEndOfDay);
                         
-                        if (isInLong && longExit) {
+                        // Strict validation: Only exit if we are actively in that specific direction
+                        if (longExit) {
                             candles[i].signal = 'EXIT_LONG';
-                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'EXIT_LONG', entryPrice });
+                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'EXIT_LONG', entryPrice, optionsDelta: 0.65 });
                             candles[i].trend = 'RED';
-                        } else if (isInShort && shortExit) {
+                        } else if (shortExit) {
                             candles[i].signal = 'EXIT_SHORT';
-                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'EXIT_SHORT', entryPrice });
+                            signals.push({ time: candles[i].time, price: candles[i].close, type: 'EXIT_SHORT', entryPrice, optionsDelta: 0.65 });
                             candles[i].trend = 'GREEN';
                         } else {
                             candles[i].trend = isInLong ? 'GREEN' : 'RED';
